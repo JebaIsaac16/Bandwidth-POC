@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Bandwidth Voice POC</title>
+        <link rel="icon" type="image/x-icon" href="./assets/images/logo.png" />
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" />
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" />
+        <style>
+            body {
+                background-color: #f5f7fa;
+                min-height: 100vh;
+            }
+            #login_screen {
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .login-card {
+                width: 380px;
+                background: #ffffff;
+                border-radius: 16px;
+                padding: 40px;
+                box-shadow: 0 10px 35px rgba(0, 0, 0, 0.1);
+                text-align: center;
+            }
+            .login-logo {
+                max-width: 220px;
+                max-height: 100px;
+                object-fit: contain;
+                margin-bottom: 35px;
+            }
+            .login-title {
+                font-size: 22px;
+                font-weight: 600;
+                margin-bottom: 8px;
+            }
+            .login-subtitle {
+                color: #6c757d;
+                font-size: 14px;
+                margin-bottom: 30px;
+            }
+            .login-button {
+                width: 100%;
+                height: 46px;
+            }
+            #app_screen {
+                display: none;
+            }
+            .app-header {
+                height: 70px;
+                background-color: #ffffff;
+                border-bottom: 1px solid #dee2e6;
+            }
+            .header-logo {
+                max-height: 42px;
+                max-width: 150px;
+                object-fit: contain;
+            }
+            .doctor-info {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .patients-container {
+                padding-top: 30px;
+                padding-bottom: 50px;
+            }
+            .patient-card {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                transition: 0.2s;
+            }
+            .patient-card:hover {
+                box-shadow: 0 5px 18px rgba(0, 0, 0, 0.08);
+            }
+            .patient-name {
+                font-weight: 600;
+                font-size: 16px;
+            }
+            .patient-phone {
+                color: #6c757d;
+                font-size: 14px;
+            }
+            #active_call_window {
+                position: fixed;
+                width: 370px;
+                right: 25px;
+                bottom: 25px;
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 18px;
+                box-shadow: 0 15px 50px rgba(0, 0, 0, 0.22);
+                z-index: 9999;
+                display: none;
+                overflow: hidden;
+                transition: width 0.18s ease, box-shadow 0.18s ease;
+            }
+            /* Kept outside app content so it remains visible while navigating. */
+            #active_call_window.is-pip {
+                width: 320px;
+                border-radius: 14px;
+                box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+            }
+            .call-window-header {
+                background-color: #ffffff;
+                border-bottom: 1px solid #edf0f2;
+                padding: 13px 15px;
+                cursor: move;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+            .call-type-icon {
+                width: 38px;
+                height: 38px;
+                border-radius: 50%;
+                background-color: #e8f7f4;
+                color: #0a9f91;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .call-type-icon span {
+                font-size: 21px;
+            }
+            .call-window-title {
+                font-weight: 600;
+                font-size: 14px;
+                color: #212529;
+            }
+            .call-window-subtitle {
+                color: #8a9299;
+                font-size: 11px;
+                margin-top: 2px;
+            }
+            .call-window-actions {
+                display: flex;
+                gap: 3px;
+            }
+            .call-window-button {
+                width: 32px;
+                height: 32px;
+                border: none;
+                background-color: transparent;
+                border-radius: 8px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .call-window-button:hover {
+                background-color: #f1f3f5;
+            }
+            .call-window-button span {
+                font-size: 20px;
+            }
+            .call-window-body {
+                padding: 28px 25px 24px;
+                text-align: center;
+            }
+            #active_call_window.is-pip .call-window-header { padding: 10px 12px; }
+            #active_call_window.is-pip .call-type-icon { width: 32px; height: 32px; }
+            #active_call_window.is-pip .call-type-icon span { font-size: 18px; }
+            #active_call_window.is-pip .call-window-body { padding: 10px 14px 12px; text-align: left; }
+            #active_call_window.is-pip .call-avatar,
+            #active_call_window.is-pip .call-patient-number,
+            #active_call_window.is-pip .call-ringing-indicator { display: none !important; }
+            #active_call_window.is-pip .call-patient-name { font-size: 15px; line-height: 1.25; }
+            #active_call_window.is-pip .call-status,
+            #active_call_window.is-pip .call-duration { display: inline-block; margin-top: 4px; font-size: 12px; }
+            #active_call_window.is-pip .call-duration::before { content: "\00a0\2022\00a0"; }
+            #active_call_window.is-pip .call-controls { justify-content: flex-end; gap: 9px; margin-top: 10px; }
+            #active_call_window.is-pip .call-control { width: 38px; height: 38px; }
+            #active_call_window.is-pip .call-control span { font-size: 19px; }
+            .call-avatar {
+                width: 78px;
+                height: 78px;
+                border-radius: 50%;
+                background-color: #eef1f3;
+                margin: 0 auto 15px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .call-avatar span {
+                font-size: 40px;
+                color: #737b82;
+            }
+            .call-patient-name {
+                font-weight: 600;
+                font-size: 19px;
+                color: #212529;
+            }
+            .call-patient-number {
+                color: #7b858d;
+                font-size: 13px;
+                margin-top: 3px;
+            }
+            .call-status {
+                margin-top: 13px;
+                font-size: 14px;
+                color: #69737b;
+            }
+            .call-duration {
+                font-size: 13px;
+                color: #69737b;
+                margin-top: 5px;
+            }
+            .call-ringing-indicator {
+                height: 18px;
+                margin-bottom: 8px;
+            }
+            .call-ringing-indicator span {
+                display: inline-block;
+                width: 6px;
+                height: 6px;
+                margin: 0 3px;
+                border-radius: 50%;
+                background-color: #0a9f91;
+                animation: call-ring-dot 1.2s infinite ease-in-out;
+            }
+            .call-ringing-indicator span:nth-child(2) {
+                animation-delay: 0.15s;
+            }
+            .call-ringing-indicator span:nth-child(3) {
+                animation-delay: 0.3s;
+            }
+            @keyframes call-ring-dot {
+                0%,
+                60%,
+                100% {
+                    transform: translateY(0);
+                    opacity: 0.4;
+                }
+                30% {
+                    transform: translateY(-5px);
+                    opacity: 1;
+                }
+            }
+            .incoming-call-controls {
+                display: flex;
+                justify-content: center;
+                flex-wrap: wrap;
+                gap: 15px;
+                margin-top: 25px;
+            }
+            .incoming-call-button {
+                min-width: 115px;
+                height: 48px;
+                border: none;
+                border-radius: 24px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 7px;
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            .incoming-call-button span {
+                font-size: 20px;
+            }
+            .incoming-call-accept {
+                background-color: #198754;
+            }
+            .incoming-call-decline {
+                background-color: #dc3545;
+            }
+            .incoming-call-accept:hover {
+                background-color: #157347;
+            }
+            .incoming-call-decline:hover {
+                background-color: #bb2d3b;
+            }
+            .incoming-call-pip {
+                width: 100%;
+                min-width: 0;
+                height: 38px;
+                border: 1px solid #ced4da;
+                border-radius: 19px;
+                background: #ffffff;
+                color: #495057;
+                font-size: 13px;
+            }
+            .incoming-call-pip:hover { background: #f8f9fa; }
+            .incoming-call-pip span { font-size: 18px; vertical-align: -4px; margin-right: 4px; }
+            .call-controls {
+                margin-top: 25px;
+                display: flex;
+                justify-content: center;
+                gap: 14px;
+            }
+            .call-control {
+                width: 46px;
+                height: 46px;
+                border-radius: 50%;
+                border: none;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .call-control span {
+                font-size: 22px;
+            }
+            .call-control-normal {
+                background-color: #e9ecef;
+                color: #212529;
+            }
+            .call-control-active {
+                background-color: #0d6efd;
+                color: #ffffff;
+            }
+            .call-control-end {
+                background-color: #dc3545;
+                color: #ffffff;
+            }
+            @media (max-width: 576px) {
+                #active_call_window {
+                    width: calc(100% - 30px);
+                    right: 15px;
+                    bottom: 15px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <section id="login_screen">
+            <div class="login-card">
+                <img src="./assets/images/login-logo.png" alt="Logo" class="login-logo" />
+                <div class="login-title">Doctor Voice Calling</div>
+                <div class="login-subtitle">Connect to Bandwidth Voice</div>
+                <div class="text-start mb-3">
+                    <label for="doctor_id" class="form-label fw-semibold">Doctor</label>
+                    <select id="doctor_id" class="form-select">
+                        <option value="D101">D101 - Doctor 101</option>
+                        <option value="D102">D102 - Doctor 102</option>
+                    </select>
+                </div>
+                <button type="button" id="btn_login" class="btn btn-primary login-button">Login</button>
+                <div id="login_error" class="text-danger small mt-3 d-none"></div>
+            </div>
+        </section>
+
+        <section id="app_screen">
+            <header class="app-header">
+                <div class="container h-100">
+                    <div class="d-flex align-items-center justify-content-between h-100">
+                        <div class="d-flex align-items-center justify-content-between gap-3">
+                            <img src="./assets/images/logo.png" alt="Logo" class="header-logo" />
+                            <h4 class="mb-0">Humhealth Call POC</h4>
+                        </div>
+                        <div class="doctor-info">
+                            <span id="doctor_status" class="badge rounded-pill text-bg-success">Connected</span>
+                            <span class="fw-semibold" id="logged_in_doctor">Doctor</span>
+                            <button type="button" id="btn_logout" class="btn btn-outline-secondary btn-sm">Logout</button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <main class="container patients-container">
+                <div class="mb-4">
+                    <h4 class="mb-1">Patients</h4>
+                    <p class="text-muted mb-0">Select a patient to start a PSTN call.</p>
+                </div>
+                <div id="patient_list" class="row g-3"></div>
+            </main>
+        </section>
+
+        <div id="active_call_window">
+            <div id="call_window_header" class="call-window-header">
+                <div class="d-flex align-items-center gap-2">
+                    <div id="call_type_icon" class="call-type-icon">
+                        <span class="material-symbols-outlined">call</span>
+                    </div>
+                    <div>
+                        <div id="call_window_title" class="call-window-title">Active Call</div>
+                        <div id="call_window_subtitle" class="call-window-subtitle">Bandwidth Voice</div>
+                    </div>
+                </div>
+
+                <div class="call-window-actions">
+                    <button type="button" id="btn_popout_call" class="call-window-button" title="Open call in Picture-in-Picture" aria-label="Open call in Picture-in-Picture">
+                        <span class="material-symbols-outlined">picture_in_picture_alt</span>
+                    </button>
+                    <button type="button" id="btn_minimize_call" class="call-window-button" title="Expand call" aria-label="Expand call">
+                        <span class="material-symbols-outlined">open_in_full</span>
+                    </button>
+                </div>
+            </div>
+
+            <div id="call_window_body" class="call-window-body">
+                <div id="call_ringing_indicator" class="call-ringing-indicator d-none">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+
+                <div class="call-avatar">
+                    <span id="call_avatar_icon" class="material-symbols-outlined">person</span>
+                </div>
+
+                <div id="call_patient_name" class="call-patient-name">Patient</div>
+                <div id="call_patient_number" class="call-patient-number">x</div>
+                <div id="call_status" class="call-status">Calling...</div>
+                <div id="call_duration" class="call-duration">00:00</div>
+
+                <div id="incoming_call_controls" class="incoming-call-controls d-none">
+                    <button type="button" id="btn_open_incoming_pip" class="incoming-call-pip" title="Open incoming call in Picture-in-Picture">
+                        <span class="material-symbols-outlined">picture_in_picture_alt</span>
+                        Open in Picture-in-Picture
+                    </button>
+                    <button type="button" id="btn_decline_incoming_call" class="incoming-call-button incoming-call-decline">
+                        <span class="material-symbols-outlined">call_end</span>
+                        <span>Decline</span>
+                    </button>
+                    <button type="button" id="btn_accept_incoming_call" class="incoming-call-button incoming-call-accept">
+                        <span class="material-symbols-outlined">call</span>
+                        <span>Accept</span>
+                    </button>
+                </div>
+
+                <div id="active_call_controls" class="call-controls">
+                    <button type="button" id="btn_mute_call" class="call-control call-control-normal" title="Mute">
+                        <span class="material-symbols-outlined">mic</span>
+                    </button>
+                
+
+                    <button type="button" id="btn_speaker_call" class="call-control call-control-normal" title="Speaker">
+                        <span class="material-symbols-outlined">volume_up</span>
+                    </button>
+
+                    <button type="button" id="btn_end_call" class="call-control call-control-end" title="End Call">
+                        <span class="material-symbols-outlined">call_end</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <audio id="remote_audio" autoplay playsinline></audio>
+
+        <audio id="inbound_ringtone" src="./assets/audio/inbound-ringtone.mp3" loop preload="auto"></audio>
+
+        <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+        <script src="/dist/bandwidth.bundle.js"></script>
+        <script src="/code.js"></script>
+    </body>
+</html>
