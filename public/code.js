@@ -16,6 +16,7 @@ const bandwidthVoicePoc = function () {
         doctorStatus: "#doctor_status",
         patientList: "#patient_list",
         activeCallWindow: "#active_call_window",
+        activeCallControls: "#active_call_controls",
         callWindowHeader: "#call_window_header",
         callWindowBody: "#call_window_body",
         minimizeCallButton: "#btn_minimize_call",
@@ -76,9 +77,20 @@ const bandwidthVoicePoc = function () {
 
     this.incomingStreamInfo = null;
     this.incomingCallActive = false;
+    this.incomingCallAccepted = false;
     this.incomingPstnCallId = null;
     this.incomingPatientId = null;
     this.incomingPatient = null;
+    this.incomingFrom = null;
+    this.incomingTo = null;
+
+    /*
+     * ----------------------------------------
+     * DOCTOR SSE STATE
+     * ----------------------------------------
+     */
+
+    this.doctorEventSource = null;
 
     /*
      * ----------------------------------------
@@ -96,50 +108,137 @@ const bandwidthVoicePoc = function () {
          * ----------------------------------------
          * REMOTE STREAM AVAILABLE
          * ----------------------------------------
-         *
-         * This event is used for both:
-         *
-         * Doctor -> Patient PSTN
-         *
-         * and
-         *
-         * Patient PSTN -> Doctor Browser
-         *
-         * For an incoming call, we DO NOT immediately
-         * treat the call as connected.
-         *
-         * We first store the stream and show:
-         *
-         * Incoming call
-         * [Decline] [Accept]
+         */
+
+        /*
+         * ----------------------------------------
+         * REMOTE STREAM AVAILABLE
+         * ----------------------------------------
          */
 
         window.bandwidthRtc.onStreamAvailable(
-            function (streamInfo) {
-                console.log("BRTC stream available:", streamInfo);
+            async function (streamInfo) {
+                console.log("=================================");
+                console.log("BRTC onStreamAvailable FIRED");
+                console.log("Stream info:", streamInfo);
+                console.log(
+                    "Media stream:",
+                    streamInfo ? streamInfo.mediaStream : null,
+                );
+                console.log("=================================");
 
                 if (!streamInfo) {
-                    console.warn("BRTC stream information is empty.");
+                    console.warn("Bandwidth BRTC stream information is empty.");
                     return;
                 }
 
                 /*
                  * ----------------------------------------
-                 * CHECK FOR INCOMING STREAM
+                 * OUTBOUND CALL
                  * ----------------------------------------
-                 *
-                 * The incoming stream is stored first.
-                 *
-                 * Do not attach it to the audio element yet.
                  */
 
-                this.incomingStreamInfo = streamInfo;
-                this.incomingCallActive = true;
+                if (this.activePatient && !this.incomingCallActive) {
+                    console.log(
+                        "Remote stream belongs to the active outbound call.",
+                    );
 
-                console.log("Incoming BRTC stream stored.");
-                console.log("Incoming stream:", streamInfo);
+                    this.attachRemoteAudio(streamInfo);
 
-                this.showIncomingCall(streamInfo);
+                    $(this.selectors.callStatus).text("Connected");
+
+                    return;
+                }
+
+                /*
+                 * ----------------------------------------
+                 * INCOMING CALL
+                 * ----------------------------------------
+                 */
+
+                if (this.incomingCallActive) {
+                    console.log(
+                        "Remote stream belongs to the incoming PSTN call.",
+                    );
+
+                    this.incomingStreamInfo = streamInfo;
+
+                    /*
+                     * ----------------------------------------
+                     * ACCEPT ACTUAL BRTC STREAM
+                     * ----------------------------------------
+                     *
+                     * The doctor already accepted the PSTN call
+                     * through /api/calls/inbound/accept.
+                     *
+                     * The BRTC stream now exists, so this is the
+                     * correct point to accept the actual stream.
+                     */
+
+                    try {
+                        if (
+                            window.bandwidthRtc &&
+                            typeof window.bandwidthRtc.acceptStream ===
+                                "function"
+                        ) {
+                            await window.bandwidthRtc.acceptStream(streamInfo);
+
+                            console.log("BRTC incoming stream accepted.");
+                        }
+                    } catch (error) {
+                        console.error(
+                            "Failed to accept BRTC incoming stream:",
+                            error,
+                        );
+
+                        $(this.selectors.callStatus).text("Call failed");
+
+                        setTimeout(
+                            function () {
+                                this.finishCallCleanup();
+                            }.bind(this),
+                            1500,
+                        );
+
+                        return;
+                    }
+
+                    this.incomingCallAccepted = true;
+
+                    this.attachRemoteAudio(streamInfo);
+
+                    this.activePatient = this.incomingPatient || {
+                        id: this.incomingPatientId || "INCOMING",
+                        name: "Patient",
+                        phoneNumber: this.incomingFrom || "Incoming call",
+                    };
+
+                    $(this.selectors.callPatientName).text(
+                        this.activePatient.name,
+                    );
+
+                    $(this.selectors.callPatientNumber).text(
+                        this.activePatient.phoneNumber,
+                    );
+
+                    $(this.selectors.callStatus).text("Connected");
+
+                    $(this.selectors.callDuration).text("00:00");
+
+                    $(this.selectors.incomingCallControls).addClass("d-none");
+
+                    $(this.selectors.callRingingIndicator).addClass("d-none");
+
+                    $(this.selectors.activeCallControls).removeClass("d-none");
+
+                    this.stopIncomingRingtone();
+
+                    this.setCallWindowMinimized(true);
+
+                    this.startCallTimer();
+
+                    console.log("Incoming PSTN call connected to BRTC.");
+                }
             }.bind(this),
         );
 
@@ -151,14 +250,50 @@ const bandwidthVoicePoc = function () {
 
         window.bandwidthRtc.onStreamUnavailable(
             function (streamInfo) {
-                console.log("Remote BRTC stream unavailable:", streamInfo);
-                console.log("BRTC stream is fully released.");
+                console.log("BRTC stream unavailable:", streamInfo);
 
                 if (this.incomingCallActive) {
-                    console.log("Incoming call stream was released.");
+                    console.log("Incoming BRTC stream was released.");
 
                     this.stopIncomingRingtone();
-                    this.hideIncomingCall();
+
+                    $(this.selectors.callStatus).text("Call ended");
+
+                    $(this.selectors.incomingCallControls).addClass("d-none");
+
+                    $(this.selectors.callRingingIndicator).addClass("d-none");
+
+                    this.stopMicrophone().then(
+                        function () {
+                            setTimeout(
+                                function () {
+                                    this.finishCallCleanup();
+                                }.bind(this),
+                                800,
+                            );
+                        }.bind(this),
+                    );
+
+                    return;
+                }
+
+                if (this.activePatient) {
+                    console.log("Active outbound BRTC stream was released.");
+
+                    $(this.selectors.callStatus).text("Call ended");
+
+                    this.stopCallTimer();
+
+                    this.stopMicrophone().then(
+                        function () {
+                            setTimeout(
+                                function () {
+                                    this.finishCallCleanup();
+                                }.bind(this),
+                                800,
+                            );
+                        }.bind(this),
+                    );
                 }
             }.bind(this),
         );
@@ -169,8 +304,9 @@ const bandwidthVoicePoc = function () {
          * ----------------------------------------
          */
 
-        window.bandwidthRtc.onReady(function () {
+        window.bandwidthRtc.onReady(function (metadata) {
             console.log("BRTC endpoint is ready.");
+            console.log("BRTC ready metadata:", metadata);
         });
 
         /*
@@ -186,89 +322,413 @@ const bandwidthVoicePoc = function () {
 
     /*
      * ----------------------------------------
+     * ATTACH REMOTE AUDIO
+     * ----------------------------------------
+     */
+
+    this.attachRemoteAudio = async function (streamInfo) {
+        if (!streamInfo || !streamInfo.mediaStream) {
+            console.warn(
+                "Unable to attach remote audio. Media stream unavailable.",
+            );
+
+            return;
+        }
+
+        const remoteAudio = $(this.selectors.remoteAudio)[0];
+
+        if (!remoteAudio) {
+            console.warn("Remote audio element not found.");
+
+            return;
+        }
+
+        console.log("Attaching remote MediaStream:", streamInfo.mediaStream);
+
+        remoteAudio.srcObject = streamInfo.mediaStream;
+
+        try {
+            await remoteAudio.play();
+
+            console.log("Remote audio playback started.");
+        } catch (error) {
+            console.warn("Remote audio autoplay failed:", error);
+        }
+    };
+
+    /*
+     * ----------------------------------------
+     * DOCTOR SSE CONNECTION
+     * ----------------------------------------
+     */
+
+    this.connectDoctorEvents = function (doctorId) {
+        if (!doctorId) {
+            console.warn("Doctor ID is required to connect to doctor events.");
+
+            return;
+        }
+
+        this.disconnectDoctorEvents();
+
+        const eventsUrl =
+            `${this.backendUrl}/api/doctor/events?doctorId=` +
+            encodeURIComponent(doctorId);
+
+        console.log("Connecting doctor SSE:", eventsUrl);
+
+        try {
+            this.doctorEventSource = new EventSource(eventsUrl);
+
+            this.doctorEventSource.onopen = function () {
+                console.log("Doctor SSE connection established.");
+            };
+
+            this.doctorEventSource.onerror = function (error) {
+                console.error("Doctor SSE connection error:", error);
+            };
+
+            /*
+             * ----------------------------------------
+             * DEFAULT MESSAGE EVENT
+             * ----------------------------------------
+             */
+
+            this.doctorEventSource.onmessage = function (event) {
+                console.log("Doctor SSE message:", event.data);
+
+                this.handleDoctorEventData(event.data);
+            }.bind(this);
+
+            /*
+             * ----------------------------------------
+             * NAMED EVENT
+             * ----------------------------------------
+             *
+             * Supports:
+             *
+             * event: incomingPstnCall
+             * data: {...}
+             */
+
+            this.doctorEventSource.addEventListener(
+                "incomingPstnCall",
+                function (event) {
+                    console.log(
+                        "Doctor SSE incomingPstnCall event:",
+                        event.data,
+                    );
+
+                    this.handleDoctorEventData(event.data);
+                }.bind(this),
+            );
+
+            this.doctorEventSource.addEventListener(
+                "incomingPstnCallCancelled",
+                function (event) {
+                    console.log("Incoming PSTN call cancelled:", event.data);
+
+                    this.handleIncomingCallCancelled(event.data);
+                }.bind(this),
+            );
+
+            this.doctorEventSource.addEventListener(
+                "incomingPstnCallEnded",
+                function (event) {
+                    console.log("Incoming PSTN call ended:", event.data);
+
+                    this.handleIncomingCallEnded(event.data);
+                }.bind(this),
+            );
+        } catch (error) {
+            console.error("Unable to create doctor SSE connection:", error);
+        }
+    };
+
+    /*
+     * ----------------------------------------
+     * DISCONNECT DOCTOR SSE
+     * ----------------------------------------
+     */
+
+    this.disconnectDoctorEvents = function () {
+        if (this.doctorEventSource) {
+            console.log("Closing doctor SSE connection.");
+
+            this.doctorEventSource.close();
+
+            this.doctorEventSource = null;
+        }
+    };
+
+    /*
+     * ----------------------------------------
+     * HANDLE DOCTOR SSE DATA
+     * ----------------------------------------
+     */
+
+    this.handleDoctorEventData = function (eventData) {
+        if (!eventData) {
+            return;
+        }
+
+        let data = eventData;
+
+        if (typeof eventData === "string") {
+            try {
+                data = JSON.parse(eventData);
+            } catch (error) {
+                console.warn("Unable to parse doctor SSE event:", eventData);
+
+                return;
+            }
+        }
+
+        if (!data || !data.type) {
+            console.warn("Doctor SSE event does not contain a type:", data);
+
+            return;
+        }
+
+        console.log("Processed doctor event:", data);
+
+        switch (data.type) {
+            case "incomingPstnCall":
+                this.handleIncomingPstnCall(data);
+                break;
+
+            case "incomingPstnCallCancelled":
+                this.handleIncomingCallCancelled(data);
+                break;
+
+            default:
+                console.log("Unhandled doctor event type:", data.type);
+                break;
+        }
+    };
+
+    /*
+     * ----------------------------------------
+     * HANDLE INCOMING PSTN CALL
+     * ----------------------------------------
+     */
+
+    this.handleIncomingPstnCall = function (callData) {
+        console.log("Incoming PSTN call notification received:", callData);
+
+        if (!callData || !callData.pstnCallId) {
+            console.warn(
+                "Incoming PSTN notification does not contain pstnCallId.",
+            );
+
+            return;
+        }
+
+        /*
+         * If another call is already active,
+         * do not replace the active call.
+         */
+
+        if (this.activePatient) {
+            console.warn(
+                "A call is already active. Ignoring incoming PSTN call.",
+            );
+
+            return;
+        }
+
+        /*
+         * If another incoming call is already ringing,
+         * do not replace it.
+         */
+
+        if (this.incomingCallActive && this.incomingPstnCallId) {
+            console.warn("Another incoming PSTN call is already ringing.");
+
+            return;
+        }
+
+        this.incomingPstnCallId = callData.pstnCallId;
+
+        this.incomingPatientId = callData.patientId || null;
+
+        this.incomingFrom = callData.from || null;
+
+        this.incomingTo = callData.to || null;
+
+        /*
+         * ----------------------------------------
+         * REGISTERED PATIENT
+         * ----------------------------------------
+         */
+
+        if (this.incomingPatientId) {
+            const patient = this.getPatient(this.incomingPatientId);
+
+            if (patient) {
+                this.incomingPatient = {
+                    id: patient.id,
+                    name: patient.name,
+                    phoneNumber: this.incomingFrom || patient.phoneNumber,
+                };
+            } else {
+                this.incomingPatient = {
+                    id: this.incomingPatientId,
+                    name: "Patient",
+                    phoneNumber: this.incomingFrom || "Incoming call",
+                };
+            }
+        } else {
+            /*
+             * ----------------------------------------
+             * UNKNOWN CALLER
+             * ----------------------------------------
+             */
+
+            this.incomingPatient = {
+                id: "UNKNOWN",
+                name: "Unknown caller",
+                phoneNumber: this.incomingFrom || "Incoming call",
+            };
+        }
+
+        this.incomingCallActive = true;
+        this.incomingCallAccepted = false;
+
+        this.incomingStreamInfo = null;
+
+        /*
+         * ----------------------------------------
+         * SHOW UI IMMEDIATELY
+         * ----------------------------------------
+         *
+         * IMPORTANT:
+         *
+         * We do NOT wait for onStreamAvailable().
+         *
+         * The backend is waiting for the doctor
+         * to accept before it executes <Connect>.
+         */
+
+        this.showIncomingCall(callData);
+    };
+
+    /*
+     * ----------------------------------------
+     * HANDLE INCOMING CALL CANCELLED
+     * ----------------------------------------
+     */
+
+    this.handleIncomingCallCancelled = function (eventData) {
+        let data = eventData;
+
+        if (typeof eventData === "string") {
+            try {
+                data = JSON.parse(eventData);
+            } catch (error) {
+                console.warn("Unable to parse cancellation event:", eventData);
+
+                return;
+            }
+        }
+
+        if (
+            !this.incomingPstnCallId ||
+            !data ||
+            data.pstnCallId !== this.incomingPstnCallId
+        ) {
+            return;
+        }
+
+        console.log("Current incoming call was cancelled by another doctor.");
+
+        this.stopIncomingRingtone();
+
+        $(this.selectors.callStatus).text("Call answered by another doctor");
+
+        $(this.selectors.incomingCallControls).addClass("d-none");
+
+        $(this.selectors.callRingingIndicator).addClass("d-none");
+
+        setTimeout(
+            function () {
+                this.finishCallCleanup();
+            }.bind(this),
+            1200,
+        );
+    };
+
+    this.handleIncomingCallEnded = function (eventData) {
+        let data = eventData;
+
+        if (typeof eventData === "string") {
+            try {
+                data = JSON.parse(eventData);
+            } catch (error) {
+                console.warn(
+                    "Unable to parse incoming call ended event:",
+                    eventData,
+                );
+
+                return;
+            }
+        }
+
+        if (
+            !this.incomingPstnCallId ||
+            !data ||
+            data.pstnCallId !== this.incomingPstnCallId
+        ) {
+            return;
+        }
+
+        console.log("PSTN caller disconnected.");
+
+        this.stopIncomingRingtone();
+
+        $(this.selectors.callStatus).text("Call ended");
+
+        $(this.selectors.incomingCallControls).addClass("d-none");
+
+        $(this.selectors.callRingingIndicator).addClass("d-none");
+
+        setTimeout(
+            function () {
+                this.finishCallCleanup();
+            }.bind(this),
+            800,
+        );
+    };
+    /*
+     * ----------------------------------------
      * SHOW INCOMING CALL
      * ----------------------------------------
      */
 
-    this.showIncomingCall = function (streamInfo) {
+    this.showIncomingCall = function (callData) {
         console.log("Showing incoming call UI.");
-
-        this.activePatient = null;
-
-        this.incomingPatient = null;
-        this.incomingPatientId = null;
-        this.incomingPstnCallId = null;
-
-        /*
-         * ----------------------------------------
-         * TRY TO READ STREAM INFORMATION
-         * ----------------------------------------
-         *
-         * Different SDK versions may expose
-         * different properties.
-         *
-         * We keep the UI generic if patient
-         * information is not available.
-         */
-
-        if (streamInfo) {
-            this.incomingPstnCallId =
-                streamInfo.callId ||
-                streamInfo.connectionId ||
-                streamInfo.id ||
-                null;
-
-            this.incomingPatientId =
-                streamInfo.patientId || streamInfo.endpointId || null;
-        }
-
-        /*
-         * ----------------------------------------
-         * DISPLAY CALL WINDOW
-         * ----------------------------------------
-         */
 
         this.showCallWindow(false);
 
-        $(this.selectors.callPatientName).text("Patient");
+        const patient = this.incomingPatient || {
+            id: this.incomingPatientId || "UNKNOWN",
+            name: "Unknown caller",
+            phoneNumber: this.incomingFrom || "Incoming call",
+        };
 
-        $(this.selectors.callPatientNumber).text("Incoming call");
+        $(this.selectors.callPatientName).text(patient.name);
+
+        $(this.selectors.callPatientNumber).text(patient.phoneNumber);
 
         $(this.selectors.callStatus).text("Incoming call");
 
         $(this.selectors.callDuration).text("00:00");
 
-        /*
-         * ----------------------------------------
-         * SHOW RINGING INDICATOR
-         * ----------------------------------------
-         */
-
         $(this.selectors.callRingingIndicator).removeClass("d-none");
-
-        /*
-         * ----------------------------------------
-         * SHOW ACCEPT / DECLINE
-         * ----------------------------------------
-         */
 
         $(this.selectors.incomingCallControls).removeClass("d-none");
 
-        /*
-         * ----------------------------------------
-         * HIDE NORMAL CALL CONTROLS
-         * ----------------------------------------
-         */
-
-        $(this.selectors.activeCallWindow)
-            .find(this.selectors.activeCallControls)
-            .addClass("d-none");
-
-        /*
-         * ----------------------------------------
-         * START RINGTONE
-         * ----------------------------------------
-         */
+        $(this.selectors.activeCallControls).addClass("d-none");
 
         this.startIncomingRingtone();
 
@@ -284,18 +744,32 @@ const bandwidthVoicePoc = function () {
     this.acceptIncomingCall = async function () {
         if (!this.incomingCallActive) {
             console.warn("No incoming call is waiting.");
+
             return;
         }
 
-        if (!this.incomingStreamInfo) {
-            console.warn("Incoming stream information is unavailable.");
+        if (!this.incomingPstnCallId) {
+            console.warn("Incoming PSTN call ID is unavailable.");
+
             return;
         }
 
-        console.log("Accepting incoming BRTC call.");
-        console.log("Incoming stream:", this.incomingStreamInfo);
+        const doctorSession = this.getDoctorSession();
 
-        // Accept is a user gesture, so an incoming call can use native PiP too.
+        if (!doctorSession || !doctorSession.endpointId || !this.doctorId) {
+            console.error("Doctor BRTC session is unavailable.");
+
+            return;
+        }
+
+        console.log("Accepting incoming PSTN call:", this.incomingPstnCallId);
+
+        /*
+         * ----------------------------------------
+         * DOCUMENT PIP
+         * ----------------------------------------
+         */
+
         this.openCallPictureInPicture();
 
         try {
@@ -309,90 +783,58 @@ const bandwidthVoicePoc = function () {
 
             /*
              * ----------------------------------------
-             * ACCEPT BRTC STREAM
+             * TELL BACKEND DOCTOR ACCEPTED
              * ----------------------------------------
              */
 
-            if (typeof window.bandwidthRtc.acceptStream === "function") {
-                await window.bandwidthRtc.acceptStream(this.incomingStreamInfo);
+            const response = await $.ajax({
+                url: `${this.backendUrl}/api/calls/inbound/accept`,
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify({
+                    pstnCallId: this.incomingPstnCallId,
+                    doctorId: this.doctorId,
+                    endpointId: doctorSession.endpointId,
+                }),
+            });
 
-                console.log("Incoming BRTC stream accepted.");
-            } else {
-                console.warn(
-                    "acceptStream() is not available on the loaded BRTC SDK.",
+            console.log("Inbound call accept response:", response);
+
+            if (!response || !response.success) {
+                throw new Error(
+                    response?.message || "Backend rejected the incoming call.",
                 );
             }
 
-            /*
-             * ----------------------------------------
-             * SET ACTIVE INCOMING CALL
-             * ----------------------------------------
-             */
-
-            this.activePatient = this.incomingPatient || {
-                id: this.incomingPatientId || "INCOMING",
-                name: "Patient",
-                phoneNumber: "Incoming call",
-            };
-
-            this.isCallEnding = false;
+            this.incomingCallAccepted = true;
 
             /*
              * ----------------------------------------
-             * CONNECT REMOTE AUDIO
+             * DO NOT CALL acceptStream() HERE
              * ----------------------------------------
+             *
+             * The backend acceptance above causes
+             * the Voice call to be redirected to:
+             *
+             * <Connect><Endpoint>
+             *
+             * BRTC will then fire onStreamAvailable().
              */
 
-            if (
-                this.incomingStreamInfo &&
-                this.incomingStreamInfo.mediaStream
-            ) {
-                const remoteAudio = $(this.selectors.remoteAudio)[0];
+            console.log("Doctor accepted PSTN call.");
 
-                if (remoteAudio) {
-                    remoteAudio.srcObject = this.incomingStreamInfo.mediaStream;
+            console.log("Waiting for BRTC onStreamAvailable...");
 
-                    try {
-                        await remoteAudio.play();
-
-                        console.log("Incoming remote audio playback started.");
-                    } catch (error) {
-                        console.error(
-                            "Incoming remote audio playback failed:",
-                            error,
-                        );
-                    }
-                }
-            }
-
-            /*
-             * ----------------------------------------
-             * CONNECTED UI
-             * ----------------------------------------
-             */
-
-            $(this.selectors.callPatientName).text(this.activePatient.name);
-
-            $(this.selectors.callPatientNumber).text(
-                this.activePatient.phoneNumber,
-            );
-
-            $(this.selectors.callStatus).text("Connected");
-
-            $(this.selectors.activeCallControls).removeClass("d-none");
-
-            this.setCallWindowMinimized(true);
-
-            this.startCallTimer();
-
-            console.log("Incoming call connected.");
+            $(this.selectors.callStatus).text("Connecting to caller...");
         } catch (error) {
-            console.error("Failed to accept incoming BRTC call:", error);
+            console.error(
+                "Failed to accept incoming PSTN call:",
+                error.responseJSON || error.responseText || error,
+            );
 
             this.stopIncomingRingtone();
 
-            this.incomingCallActive = false;
-            this.incomingStreamInfo = null;
+            this.incomingCallAccepted = false;
 
             $(this.selectors.callStatus).text("Call failed");
 
@@ -414,43 +856,45 @@ const bandwidthVoicePoc = function () {
     this.declineIncomingCall = async function () {
         if (!this.incomingCallActive) {
             console.warn("No incoming call is waiting.");
+
             return;
         }
 
-        console.log("Declining incoming BRTC call.");
+        const doctorSession = this.getDoctorSession();
+
+        console.log("Declining incoming PSTN call:", this.incomingPstnCallId);
 
         this.stopIncomingRingtone();
 
         try {
             /*
              * ----------------------------------------
-             * DECLINE BRTC STREAM
+             * TELL BACKEND DOCTOR DECLINED
              * ----------------------------------------
              */
 
-            if (
-                this.incomingStreamInfo &&
-                typeof window.bandwidthRtc.declineStream === "function"
-            ) {
-                await window.bandwidthRtc.declineStream(
-                    this.incomingStreamInfo,
-                );
+            if (this.incomingPstnCallId && doctorSession) {
+                const response = await $.ajax({
+                    url: `${this.backendUrl}/api/calls/inbound/decline`,
+                    type: "POST",
+                    contentType: "application/json",
+                    data: JSON.stringify({
+                        pstnCallId: this.incomingPstnCallId,
+                        doctorId: this.doctorId,
+                        endpointId: doctorSession.endpointId,
+                    }),
+                });
 
-                console.log("Incoming BRTC stream declined.");
-            } else {
-                console.warn(
-                    "declineStream() is not available on the loaded BRTC SDK.",
-                );
+                console.log("Inbound call decline response:", response);
             }
         } catch (error) {
-            console.error("Failed to decline incoming BRTC call:", error);
+            console.error(
+                "Failed to decline incoming PSTN call:",
+                error.responseJSON || error.responseText || error,
+            );
         }
 
-        this.incomingCallActive = false;
-        this.incomingStreamInfo = null;
-        this.incomingPatientId = null;
-        this.incomingPstnCallId = null;
-        this.incomingPatient = null;
+        this.incomingCallAccepted = false;
 
         $(this.selectors.callStatus).text("Call declined");
 
@@ -473,6 +917,7 @@ const bandwidthVoicePoc = function () {
 
         if (!ringtone) {
             console.warn("Incoming ringtone element not found.");
+
             return;
         }
 
@@ -497,6 +942,7 @@ const bandwidthVoicePoc = function () {
         }
 
         ringtone.pause();
+
         ringtone.currentTime = 0;
     };
 
@@ -512,28 +958,28 @@ const bandwidthVoicePoc = function () {
         $(this.selectors.callRingingIndicator).addClass("d-none");
 
         this.incomingCallActive = false;
+        this.incomingCallAccepted = false;
     };
 
     /*
      * ----------------------------------------
      * WAIT FOR ENDPOINT ELIGIBILITY
      * ----------------------------------------
-     *
-     * Microphone must already be published
-     * before Bandwidth marks the endpoint
-     * eligible for outbound calling.
      */
 
     this.waitForEndpointEligibility = function (endpointId) {
         return new Promise(function (resolve, reject) {
             const startedAt = Date.now();
+
             const timeout = 15000;
 
             const checkStatus = function () {
                 $.ajax({
                     url: "/api/doctor/endpoint-status",
                     type: "GET",
-                    data: { endpointId: endpointId },
+                    data: {
+                        endpointId: endpointId,
+                    },
                 })
                     .done(function (response) {
                         if (response.success && response.eligible) {
@@ -791,13 +1237,6 @@ const bandwidthVoicePoc = function () {
      * ----------------------------------------
      * CONNECT DOCTOR TO BRTC
      * ----------------------------------------
-     *
-     * Login:
-     *
-     * 1. Connect BRTC.
-     * 2. Publish microphone.
-     * 3. Endpoint becomes eligible.
-     * 4. Browser can receive incoming calls.
      */
 
     this.connectDoctor = async function (sessionData) {
@@ -825,11 +1264,21 @@ const bandwidthVoicePoc = function () {
 
             this.showApplicationScreen();
 
+            /*
+             * ----------------------------------------
+             * CONNECT DOCTOR SSE
+             * ----------------------------------------
+             */
+
+            this.connectDoctorEvents(sessionData.doctorId);
+
             return true;
         } catch (error) {
             console.error("BRTC connection failed:", error);
 
             await this.stopMicrophone();
+
+            this.disconnectDoctorEvents();
 
             this.showLoginError(
                 "Unable to connect to Bandwidth voice service.",
@@ -910,6 +1359,7 @@ const bandwidthVoicePoc = function () {
         }
 
         this.microphoneStream = null;
+
         this.publishedMicrophoneStream = null;
     };
 
@@ -1011,28 +1461,7 @@ const bandwidthVoicePoc = function () {
      * ----------------------------------------
      *
      * EXISTING OUTBOUND FLOW
-     *
-     * CALL
-     *  ↓
-     * Start microphone
-     *  ↓
-     * Publish microphone
-     *  ↓
-     * Wait endpointEligible
-     *  ↓
-     * Request outbound connection
-     *  ↓
-     * Backend receives outboundConnectionRequest
-     *  ↓
-     * Backend creates Voice call
-     *  ↓
-     * PSTN answers
-     *  ↓
-     * Voice answer callback
-     *  ↓
-     * <Connect><Endpoint>
-     *  ↓
-     * Remote stream
+     * ----------------------------------------
      */
 
     this.callPatient = async function (patient) {
@@ -1050,14 +1479,18 @@ const bandwidthVoicePoc = function () {
             return;
         }
 
+        if (this.incomingCallActive) {
+            console.warn("An incoming call is already active.");
+
+            return;
+        }
+
         if (this.isCallEnding) {
             console.warn("Previous BRTC call is still ending.");
 
             return;
         }
 
-        // A Document PiP request must happen in the click gesture that starts
-        // the call, so do not await it before continuing with the call flow.
         this.openCallPictureInPicture();
 
         this.activePatient = patient;
@@ -1070,7 +1503,6 @@ const bandwidthVoicePoc = function () {
 
         $(this.selectors.callDuration).text("00:00");
 
-        // Outbound calls begin in a compact, persistent PiP panel.
         this.showCallWindow(true);
 
         try {
@@ -1206,12 +1638,6 @@ const bandwidthVoicePoc = function () {
 
         console.log("Ending call:", patient.phoneNumber);
 
-        /*
-         * ----------------------------------------
-         * END BANDWIDTH VOICE CALL
-         * ----------------------------------------
-         */
-
         try {
             if (doctorSession) {
                 console.log("Requesting backend to end Voice call...");
@@ -1234,19 +1660,7 @@ const bandwidthVoicePoc = function () {
             );
         }
 
-        /*
-         * ----------------------------------------
-         * STOP MICROPHONE
-         * ----------------------------------------
-         */
-
         await this.stopMicrophone();
-
-        /*
-         * ----------------------------------------
-         * END BRTC CONNECTION
-         * ----------------------------------------
-         */
 
         if (window.bandwidthRtc) {
             try {
@@ -1262,12 +1676,6 @@ const bandwidthVoicePoc = function () {
                 console.error("BRTC hangup failed:", error);
             }
         }
-
-        /*
-         * ----------------------------------------
-         * CLEAN FRONTEND
-         * ----------------------------------------
-         */
 
         this.finishCallCleanup();
 
@@ -1314,9 +1722,15 @@ const bandwidthVoicePoc = function () {
 
         this.incomingPstnCallId = null;
 
+        this.incomingFrom = null;
+
+        this.incomingTo = null;
+
         this.incomingStreamInfo = null;
 
         this.incomingCallActive = false;
+
+        this.incomingCallAccepted = false;
 
         this.isMuted = false;
 
@@ -1408,7 +1822,12 @@ const bandwidthVoicePoc = function () {
         this.setCallWindowMinimized(!this.isCallWindowMinimized);
     };
 
-    /* Keep call controls available even while the panel is compact. */
+    /*
+     * ----------------------------------------
+     * SET CALL WINDOW MINIMIZED
+     * ----------------------------------------
+     */
+
     this.setCallWindowMinimized = function (minimized) {
         this.isCallWindowMinimized = minimized;
 
@@ -1421,8 +1840,15 @@ const bandwidthVoicePoc = function () {
             .text(minimized ? "open_in_full" : "remove");
     };
 
+    /*
+     * ----------------------------------------
+     * SHOW CALL WINDOW
+     * ----------------------------------------
+     */
+
     this.showCallWindow = function (minimized) {
         this.setCallWindowMinimized(minimized);
+
         $(this.selectors.activeCallWindow).show();
 
         if (
@@ -1434,15 +1860,18 @@ const bandwidthVoicePoc = function () {
     };
 
     /*
-     * Opens an always-on-top browser window that mirrors the live call UI.
-     * The original UI remains the single source of truth for call state.
+     * ----------------------------------------
+     * OPEN PICTURE IN PICTURE
+     * ----------------------------------------
      */
+
     this.openCallPictureInPicture = async function () {
         if (
             this.pictureInPictureWindow &&
             !this.pictureInPictureWindow.closed
         ) {
             this.pictureInPictureWindow.focus();
+
             return;
         }
 
@@ -1450,6 +1879,7 @@ const bandwidthVoicePoc = function () {
             console.info(
                 "Document Picture-in-Picture is unavailable; using the in-page call panel.",
             );
+
             return;
         }
 
@@ -1460,19 +1890,21 @@ const bandwidthVoicePoc = function () {
                     height: 250,
                     preferInitialWindowPlacement: true,
                 });
+
             const callWindow = $(this.selectors.activeCallWindow)[0];
 
             if (!callWindow) {
                 pipWindow.close();
+
                 return;
             }
 
-            // Stylesheets are document-specific, so copy them into the PiP page.
             $("link[rel='stylesheet'], style").each(function () {
                 pipWindow.document.head.appendChild(this.cloneNode(true));
             });
 
             const pipStyle = pipWindow.document.createElement("style");
+
             pipStyle.textContent = `
                 html, body { margin: 0; min-width: 0; background: #f5f7fa; }
                 #active_call_window {
@@ -1485,24 +1917,30 @@ const bandwidthVoicePoc = function () {
                     box-shadow: none !important;
                 }
             `;
+
             pipWindow.document.head.appendChild(pipStyle);
+
             const pipCallWindow = callWindow.cloneNode(true);
+
             pipWindow.document.body.appendChild(pipCallWindow);
+
             this.pictureInPictureWindow = pipWindow;
 
-            // Keep the separate PiP view current whenever the call UI changes.
             this.pictureInPictureObserver = new MutationObserver(
                 function () {
                     this.syncPictureInPictureCallWindow();
                 }.bind(this),
             );
+
             this.pictureInPictureObserver.observe(callWindow, {
                 subtree: true,
                 childList: true,
                 characterData: true,
                 attributes: true,
             });
+
             this.bindPictureInPictureControls();
+
             $(callWindow).hide();
 
             pipWindow.addEventListener(
@@ -1510,17 +1948,25 @@ const bandwidthVoicePoc = function () {
                 function () {
                     this.restoreCallWindowFromPictureInPicture();
                 }.bind(this),
-                { once: true },
+                {
+                    once: true,
+                },
             );
         } catch (error) {
-            // The normal floating panel remains the fallback if PiP is blocked.
             console.warn("Unable to open Document Picture-in-Picture:", error);
         }
     };
 
+    /*
+     * ----------------------------------------
+     * RESTORE CALL WINDOW FROM PIP
+     * ----------------------------------------
+     */
+
     this.restoreCallWindowFromPictureInPicture = function () {
         if (this.pictureInPictureObserver) {
             this.pictureInPictureObserver.disconnect();
+
             this.pictureInPictureObserver = null;
         }
 
@@ -1529,8 +1975,15 @@ const bandwidthVoicePoc = function () {
         } else {
             $(this.selectors.activeCallWindow).hide();
         }
+
         this.pictureInPictureWindow = null;
     };
+
+    /*
+     * ----------------------------------------
+     * SYNC PIP
+     * ----------------------------------------
+     */
 
     this.syncPictureInPictureCallWindow = function () {
         if (
@@ -1541,6 +1994,7 @@ const bandwidthVoicePoc = function () {
         }
 
         const source = $(this.selectors.activeCallWindow)[0];
+
         const target =
             this.pictureInPictureWindow.document.getElementById(
                 "active_call_window",
@@ -1551,9 +2005,17 @@ const bandwidthVoicePoc = function () {
         }
 
         target.className = source.className;
+
         target.innerHTML = source.innerHTML;
+
         this.bindPictureInPictureControls();
     };
+
+    /*
+     * ----------------------------------------
+     * BIND PIP CONTROLS
+     * ----------------------------------------
+     */
 
     this.bindPictureInPictureControls = function () {
         if (
@@ -1564,21 +2026,29 @@ const bandwidthVoicePoc = function () {
         }
 
         const pipDocument = this.pictureInPictureWindow.document;
+
         const bind = function (id, handler) {
             const button = pipDocument.getElementById(id);
+
             if (button) {
                 button.onclick = handler;
             }
         };
 
         bind("btn_mute_call", this.toggleMute.bind(this));
+
         bind("btn_speaker_call", this.toggleSpeaker.bind(this));
+
         bind("btn_end_call", this.endCall.bind(this));
+
         bind("btn_accept_incoming_call", this.acceptIncomingCall.bind(this));
+
         bind("btn_decline_incoming_call", this.declineIncomingCall.bind(this));
+
         bind("btn_minimize_call", this.minimizeCallWindow.bind(this));
 
         const popoutButton = pipDocument.getElementById("btn_popout_call");
+
         if (popoutButton) {
             popoutButton.style.display = "none";
         }
@@ -1586,6 +2056,7 @@ const bandwidthVoicePoc = function () {
         const incomingPipButton = pipDocument.getElementById(
             "btn_open_incoming_pip",
         );
+
         if (incomingPipButton) {
             incomingPipButton.style.display = "none";
         }
@@ -1616,11 +2087,13 @@ const bandwidthVoicePoc = function () {
 
         console.log("Browser page is closing or refreshing.");
 
+        this.disconnectDoctorEvents();
+
         const doctorSession = this.getDoctorSession();
 
         /*
          * ----------------------------------------
-         * STOP MICROPHONE IMMEDIATELY
+         * STOP MICROPHONE
          * ----------------------------------------
          */
 
@@ -1705,6 +2178,8 @@ const bandwidthVoicePoc = function () {
     this.logoutDoctor = async function () {
         console.log("Doctor logout started.");
 
+        this.disconnectDoctorEvents();
+
         /*
          * ----------------------------------------
          * END ACTIVE CALL
@@ -1713,6 +2188,16 @@ const bandwidthVoicePoc = function () {
 
         if (this.activePatient) {
             await this.endCall();
+        }
+
+        /*
+         * ----------------------------------------
+         * DECLINE PENDING INCOMING CALL
+         * ----------------------------------------
+         */
+
+        if (this.incomingCallActive && !this.incomingCallAccepted) {
+            await this.declineIncomingCall();
         }
 
         /*
@@ -1834,9 +2319,6 @@ const bandwidthVoicePoc = function () {
 
         /*
          * Patient call buttons.
-         *
-         * Delegated because patient cards
-         * are generated dynamically.
          */
 
         $(document).on(
@@ -1897,7 +2379,6 @@ const bandwidthVoicePoc = function () {
 
         /*
          * Minimize call.
-
          */
 
         $(this.selectors.minimizeCallButton).on(
@@ -1908,15 +2389,19 @@ const bandwidthVoicePoc = function () {
         );
 
         /*
-         * Document PiP needs an explicit user action. Open the separate window
-         * before answering so both Accept and Decline are available inside it.
+         * Open incoming PiP.
          */
+
         $(this.selectors.openIncomingPipButton).on(
             "click",
             function () {
                 this.openCallPictureInPicture();
             }.bind(this),
         );
+
+        /*
+         * Popout call.
+         */
 
         $(this.selectors.popoutCallButton).on(
             "click",
@@ -1927,7 +2412,6 @@ const bandwidthVoicePoc = function () {
 
         /*
          * Mute.
-
          */
 
         $(this.selectors.muteCallButton).on(
@@ -1939,7 +2423,6 @@ const bandwidthVoicePoc = function () {
 
         /*
          * Speaker.
-
          */
 
         $(this.selectors.speakerCallButton).on(

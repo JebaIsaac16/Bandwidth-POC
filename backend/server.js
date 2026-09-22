@@ -74,9 +74,9 @@ const inboundCallSessions = new Map();
 const inboundCallLegs = new Map();
 
 const patientDoctorMap = new Map([
-    ["PT001", ["D101"]],
-    ["PT002", ["D101"]],
-    ["PT003", ["D101"]],
+    ["PT001", ["D101", "D102"]],
+    ["PT002", ["D101", "D102"]],
+    ["PT003", ["D101", "D102"]],
 ]);
 
 const patientPhoneMap = new Map([
@@ -926,14 +926,25 @@ app.post("/api/callbacks/voice/answer", (req, res) => {
 
     const pendingCall = pendingBrtcCallsByCallId.get(callId);
 
-    if (!pendingCall) {
-        console.error("No BRTC call found for Voice call:", callId);
+if (pendingCall) {
+    const doctorId = Array.from(doctorEndpointMap.entries()).find(function (entry) {
+        return entry[1] === pendingCall.endpointId;
+    })?.[0];
 
-        res.set("Content-Type", "application/xml; charset=utf-8");
-        res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
-
-        return;
+    if (doctorId) {
+        sendDoctorEvent(doctorId, {
+            type: "outboundCallEnded",
+            callId: callId,
+            doctorId: doctorId,
+            reason: req.body.cause || "pstn_call_disconnected",
+        });
     }
+
+    pendingBrtcCallsByCallId.delete(callId);
+    pendingBrtcCallsByEndpoint.delete(pendingCall.endpointId);
+
+    console.log("BRTC call mapping cleaned:", pendingCall.endpointId);
+}
 
     const endpointId = pendingCall.endpointId;
 
@@ -1176,6 +1187,10 @@ app.post("/api/calls/end", async (req, res) => {
  *   ↓
  * Notify doctor browser through SSE
  *   ↓
+ * Doctor accepts
+ *   ↓
+ * Redirect active PSTN call
+ *   ↓
  * <Connect><Endpoint>
  * ---------------------------------------- */
 
@@ -1193,10 +1208,6 @@ app.post("/api/callbacks/voice/initiate", async (req, res) => {
 
         const patientId = getPatientIdFromPhone(from);
 
-        /* ----------------------------------------
-         * PATIENT IDENTIFICATION
-         * ---------------------------------------- */
-
         if (patientId) {
             console.log("Caller identified as PATIENT:", patientId);
             console.log("Patient phone number:", from);
@@ -1207,19 +1218,11 @@ app.post("/api/callbacks/voice/initiate", async (req, res) => {
 
         console.log("Patient identification result:", patientId || "UNKNOWN");
 
-        /* ----------------------------------------
-         * FIND DOCTOR
-         *
-         * REGISTERED PATIENT
-         * → use assigned doctor
-         *
-         * UNKNOWN CALLER
-         * → use D101 for this POC
-         * ---------------------------------------- */
-
         const doctorIds = patientId
             ? patientDoctorMap.get(patientId) || []
-            : ["D101"];
+            : ["D101", "D102"];
+
+        console.log("Assigned doctors:", doctorIds);
 
         if (!doctorIds.length) {
             console.log(
@@ -1227,36 +1230,44 @@ app.post("/api/callbacks/voice/initiate", async (req, res) => {
                 patientId || "UNKNOWN",
             );
 
-            console.log("Inbound call cannot be routed to a doctor.");
-
             res.set("Content-Type", "application/xml; charset=utf-8");
-            res.send(
-                '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
-            );
 
-            return;
+            return res.send(
+                '<?xml version="1.0" encoding="UTF-8"?>' +
+                    "<Response><Hangup/></Response>",
+            );
         }
 
-        const eligibleDoctors = getEligibleDoctors(doctorIds);
+        /*
+         * First eligible doctor wins.
+         *
+         * doctorIds order:
+         *
+         * D101
+         * D102
+         *
+         * Therefore:
+         *
+         * D101 eligible -> D101
+         * D101 unavailable + D102 eligible -> D102
+         */
+        const eligibleDoctors = getEligibleDoctors(doctorIds).slice(0, 1);
 
-        console.log("Eligible doctors:", eligibleDoctors);
+        console.log(
+            "Eligible doctors:",
+            JSON.stringify(eligibleDoctors, null, 2),
+        );
 
         if (!eligibleDoctors.length) {
             console.log("No assigned doctor is currently available.");
 
             res.set("Content-Type", "application/xml; charset=utf-8");
-            res.send(
-                '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+
+            return res.send(
+                '<?xml version="1.0" encoding="UTF-8"?>' +
+                    "<Response><Hangup/></Response>",
             );
-
-            return;
         }
-
-        const doctor = eligibleDoctors[0];
-
-        /* ----------------------------------------
-         * CREATE INBOUND APPLICATION SESSION
-         * ---------------------------------------- */
 
         const session = {
             pstnCallId: callId,
@@ -1264,17 +1275,19 @@ app.post("/api/callbacks/voice/initiate", async (req, res) => {
             from: from,
             to: to,
             status: "RINGING",
-            doctorIds: [doctor.doctorId],
-            legs: [
-                {
+            doctorIds: eligibleDoctors.map(function (doctor) {
+                return doctor.doctorId;
+            }),
+            legs: eligibleDoctors.map(function (doctor) {
+                return {
                     doctorId: doctor.doctorId,
                     endpointId: doctor.endpointId,
                     callId: null,
                     brtcEventCallId: null,
                     status: "RINGING",
                     answered: false,
-                },
-            ],
+                };
+            }),
             winningDoctorId: null,
             winningEndpointId: null,
             winningCallId: null,
@@ -1285,46 +1298,36 @@ app.post("/api/callbacks/voice/initiate", async (req, res) => {
         inboundCallSessions.set(callId, session);
         inboundBrtcCalls.set(callId, session);
 
-        /* ----------------------------------------
-         * NOTIFY DOCTOR BROWSER
-         * ---------------------------------------- */
-
-        const doctorBrowserNotified = sendDoctorEvent(doctor.doctorId, {
-            type: "incomingPstnCall",
+        const notifiedDoctors = notifyDoctorsIncomingCall(eligibleDoctors, {
             pstnCallId: callId,
-            endpointId: doctor.endpointId,
-            doctorId: doctor.doctorId,
             patientId: patientId,
             from: from,
             to: to,
         });
 
-        console.log(
-            "Doctor browser notification:",
-            doctorBrowserNotified ? "SENT" : "NOT CONNECTED",
-        );
+        console.log("Doctors notified:", notifiedDoctors);
 
         console.log("=================================");
-        console.log("Connecting inbound PSTN call directly to BRTC");
+        console.log("INBOUND CALL IS RINGING");
         console.log("Patient:", patientId || "UNKNOWN");
-        console.log("Doctor:", doctor.doctorId);
-        console.log("Endpoint:", doctor.endpointId);
+        console.log("Doctor:", eligibleDoctors[0].doctorId);
         console.log("PSTN Call:", callId);
+        console.log("Waiting for doctor to accept...");
         console.log("=================================");
 
-        /* ----------------------------------------
-         * DIRECT PSTN -> BRTC ENDPOINT
-         * ---------------------------------------- */
-
+        /*
+         * Keep the PSTN call alive temporarily.
+         *
+         * We do NOT connect directly to the doctor here.
+         */
         const bxml =
-            '<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Endpoint>' +
-            doctor.endpointId +
-            "</Endpoint></Connect></Response>";
-
-        console.log("Sending BXML:");
-        console.log(bxml);
+            '<?xml version="1.0" encoding="UTF-8"?>' +
+            "<Response>" +
+            '<Pause duration="60"/>' +
+            "</Response>";
 
         res.set("Content-Type", "application/xml; charset=utf-8");
+
         res.send(bxml);
     } catch (error) {
         console.error(
@@ -1335,7 +1338,8 @@ app.post("/api/callbacks/voice/initiate", async (req, res) => {
         res.status(error.response?.status || 500)
             .type("application/xml")
             .send(
-                '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+                '<?xml version="1.0" encoding="UTF-8"?>' +
+                    "<Response><Hangup/></Response>",
             );
     }
 });
@@ -1347,14 +1351,24 @@ app.post("/api/callbacks/voice/initiate", async (req, res) => {
  *
  * Browser Accept
  *   ↓
- * This endpoint updates application state
+ * Verify session
  *   ↓
- * Browser BRTC SDK accepts incoming stream
+ * Verify endpoint is STILL eligible
+ *   ↓
+ * Mark doctor as winner
+ *   ↓
+ * Redirect active PSTN call
+ *   ↓
+ * Winner callback
+ *   ↓
+ * <Connect><Endpoint>
+ *   ↓
+ * BRTC stream reaches browser
  * ---------------------------------------- */
 
 app.post("/api/calls/inbound/accept", async (req, res) => {
     console.log("=================================");
-    console.log("Doctor accepted inbound PSTN call");
+    console.log("DOCTOR ACCEPTED INBOUND PSTN CALL");
     console.log("Body:");
     console.log(JSON.stringify(req.body, null, 2));
     console.log("=================================");
@@ -1370,12 +1384,51 @@ app.post("/api/calls/inbound/accept", async (req, res) => {
         });
     }
 
+    /*
+     * IMPORTANT:
+     *
+     * The endpoint could have become disconnected
+     * after the incoming UI was displayed.
+     *
+     * Therefore check eligibility AGAIN
+     * immediately before connecting the PSTN call.
+     */
+    const endpointStatus = brtcEndpointStatus.get(endpointId);
+
+    if (!endpointStatus || endpointStatus.eligible !== true) {
+        console.log("Doctor endpoint is no longer eligible");
+        console.log("Doctor:", doctorId);
+        console.log("Endpoint:", endpointId);
+
+        return res.status(409).json({
+            success: false,
+            message: "Doctor BRTC endpoint is no longer eligible",
+            doctorId: doctorId,
+            endpointId: endpointId,
+        });
+    }
+
     const session = inboundCallLegs.get(pstnCallId);
 
     if (!session) {
         return res.status(404).json({
             success: false,
             message: "Inbound call session not found",
+        });
+    }
+
+    /*
+     * FIRST ACCEPT WINS
+     */
+
+    if (session.winningDoctorId) {
+        console.log("Call already answered by:", session.winningDoctorId);
+
+        return res.status(409).json({
+            success: false,
+            message: "Call was already answered",
+            winningDoctorId: session.winningDoctorId,
+            winningEndpointId: session.winningEndpointId,
         });
     }
 
@@ -1390,20 +1443,91 @@ app.post("/api/calls/inbound/accept", async (req, res) => {
         });
     }
 
+    /*
+     * Set winner BEFORE any await.
+     *
+     * This prevents another doctor
+     * from winning the same call.
+     */
+
     leg.status = "ANSWERED";
     leg.answered = true;
 
-    session.status = "CONNECTED";
+    session.status = "CONNECTING";
     session.winningDoctorId = doctorId;
     session.winningEndpointId = endpointId;
     session.winningCallId = leg.callId || null;
 
-    console.log("Inbound call accepted");
-    console.log("PSTN Call ID:", pstnCallId);
+    console.log("=================================");
+    console.log("WINNING DOCTOR");
     console.log("Doctor:", doctorId);
     console.log("Endpoint:", endpointId);
+    console.log("PSTN Call:", pstnCallId);
+    console.log("=================================");
 
-    await hangupLosingInboundLegs(session, session.winningCallId);
+    /*
+     * Tell every other doctor
+     * that somebody else answered.
+     */
+
+    for (const otherLeg of session.legs) {
+        if (otherLeg.doctorId !== doctorId && otherLeg.status === "RINGING") {
+            otherLeg.status = "CANCELLED";
+            otherLeg.answered = false;
+
+            sendDoctorEvent(otherLeg.doctorId, {
+                type: "incomingPstnCallCancelled",
+                pstnCallId: pstnCallId,
+                doctorId: otherLeg.doctorId,
+                patientId: session.patientId,
+                winningDoctorId: doctorId,
+                winningEndpointId: endpointId,
+            });
+
+            console.log("Cancelled incoming call for:", otherLeg.doctorId);
+        }
+    }
+
+    /*
+     * Redirect PSTN to winning doctor.
+     */
+
+    const redirectUrl =
+        `${NGROK_URL}/api/callbacks/voice/inbound-winner` +
+        `?endpointId=${encodeURIComponent(endpointId)}` +
+        `&pstnCallId=${encodeURIComponent(pstnCallId)}`;
+
+    try {
+        console.log("Redirecting PSTN call:");
+        console.log("Call ID:", pstnCallId);
+        console.log("Winning endpoint:", endpointId);
+        console.log("Redirect URL:", redirectUrl);
+
+        await redirectVoiceCall(pstnCallId, redirectUrl);
+
+        console.log("PSTN call redirected successfully");
+
+        session.status = "CONNECTED";
+    } catch (error) {
+        console.error(
+            "Failed to redirect PSTN call:",
+            error.response?.data || error.message,
+        );
+
+        session.status = "RINGING";
+        session.winningDoctorId = null;
+        session.winningEndpointId = null;
+        session.winningCallId = null;
+
+        leg.status = "RINGING";
+        leg.answered = false;
+
+        return res.status(error.response?.status || 500).json({
+            success: false,
+            message: "Failed to connect call to doctor",
+            error: error.response?.data || error.message,
+        });
+    }
 
     res.json({
         success: true,
@@ -1482,7 +1606,7 @@ app.post("/api/test/incoming-call", (req, res) => {
         ? patientDoctorMap.get(patientId) || []
         : ["D101"];
 
-    const eligibleDoctors = getEligibleDoctors(doctorIds);
+    const eligibleDoctors = getEligibleDoctors(doctorIds).slice(0, 1);
 
     if (!eligibleDoctors.length) {
         console.log("No eligible doctor available for test incoming call");
@@ -1521,15 +1645,11 @@ app.post("/api/test/incoming-call", (req, res) => {
     };
 
     inboundCallLegs.set(testCallId, session);
-
     inboundCallSessions.set(testCallId, session);
-
     inboundBrtcCalls.set(testCallId, session);
 
     console.log("Test incoming call created:", testCallId);
-
     console.log("Patient:", patientId || "UNKNOWN");
-
     console.log("Doctor:", doctor.doctorId);
 
     sendDoctorEvent(doctor.doctorId, {
@@ -1629,6 +1749,122 @@ function sendDoctorEvent(doctorId, event) {
 
     return true;
 }
+
+function notifyDoctorsIncomingCall(eligibleDoctors, callData) {
+    console.log("=================================");
+    console.log("NOTIFYING ELIGIBLE DOCTOR");
+    console.log("=================================");
+
+    const notifiedDoctors = [];
+
+    for (const doctor of eligibleDoctors) {
+        const sent = sendDoctorEvent(doctor.doctorId, {
+            type: "incomingPstnCall",
+            pstnCallId: callData.pstnCallId,
+            endpointId: doctor.endpointId,
+            doctorId: doctor.doctorId,
+            patientId: callData.patientId,
+            from: callData.from,
+            to: callData.to,
+        });
+
+        console.log(
+            "Doctor:",
+            doctor.doctorId,
+            "| Endpoint:",
+            doctor.endpointId,
+            "| SSE:",
+            sent ? "SENT" : "NOT CONNECTED",
+        );
+
+        if (sent) {
+            notifiedDoctors.push(doctor.doctorId);
+        }
+    }
+
+    console.log("Doctors notified:", notifiedDoctors);
+
+    return notifiedDoctors;
+}
+
+/* ----------------------------------------
+ * INBOUND WINNING DOCTOR CALLBACK
+ *
+ * PSTN
+ *   ↓
+ * redirectVoiceCall()
+ *   ↓
+ * This callback
+ *   ↓
+ * <Connect><Endpoint>
+ *   ↓
+ * Doctor BRTC endpoint
+ * ---------------------------------------- */
+
+app.post("/api/callbacks/voice/inbound-winner", (req, res) => {
+    console.log("=================================");
+    console.log("INBOUND WINNING DOCTOR CALLBACK");
+    console.log("Body:");
+    console.log(JSON.stringify(req.body, null, 2));
+    console.log("=================================");
+
+    const endpointId = req.query?.endpointId;
+    const pstnCallId = req.query?.pstnCallId;
+
+    if (!endpointId || !pstnCallId) {
+        console.error("Missing endpointId or pstnCallId");
+
+        res.set("Content-Type", "application/xml; charset=utf-8");
+
+        return res.send(
+            '<?xml version="1.0" encoding="UTF-8"?>' +
+                "<Response><Hangup/></Response>",
+        );
+    }
+
+    const session = inboundCallLegs.get(pstnCallId);
+
+    if (!session) {
+        console.error("Inbound session not found:", pstnCallId);
+
+        res.set("Content-Type", "application/xml; charset=utf-8");
+
+        return res.send(
+            '<?xml version="1.0" encoding="UTF-8"?>' +
+                "<Response><Hangup/></Response>",
+        );
+    }
+
+    if (session.winningEndpointId !== endpointId) {
+        console.error("Endpoint is not the winning endpoint:", endpointId);
+
+        res.set("Content-Type", "application/xml; charset=utf-8");
+
+        return res.send(
+            '<?xml version="1.0" encoding="UTF-8"?>' +
+                "<Response><Hangup/></Response>",
+        );
+    }
+
+    console.log("Connecting PSTN to winning BRTC endpoint");
+    console.log("PSTN Call:", pstnCallId);
+    console.log("Winning Doctor:", session.winningDoctorId);
+    console.log("Winning Endpoint:", endpointId);
+
+    const bxml =
+        '<?xml version="1.0" encoding="UTF-8"?>' +
+        "<Response>" +
+        "<Connect>" +
+        "<Endpoint>" +
+        endpointId +
+        "</Endpoint>" +
+        "</Connect>" +
+        "</Response>";
+
+    res.set("Content-Type", "application/xml; charset=utf-8");
+
+    res.send(bxml);
+});
 
 /* ----------------------------------------
  * START SERVER
