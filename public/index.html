@@ -5,8 +5,14 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Bandwidth Voice POC</title>
         <link rel="icon" type="image/x-icon" href="./assets/images/logo.png" />
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" />
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" />
+        <link
+            href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
+            rel="stylesheet"
+        />
+        <link
+            rel="stylesheet"
+            href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined"
+        />
         <style>
             body {
                 background-color: #f5f7fa;
@@ -97,7 +103,9 @@
                 z-index: 9999;
                 display: none;
                 overflow: hidden;
-                transition: width 0.18s ease, box-shadow 0.18s ease;
+                transition:
+                    width 0.18s ease,
+                    box-shadow 0.18s ease;
             }
             /* Kept outside app content so it remains visible while navigating. */
             #active_call_window.is-pip {
@@ -161,20 +169,50 @@
                 padding: 28px 25px 24px;
                 text-align: center;
             }
-            #active_call_window.is-pip .call-window-header { padding: 10px 12px; }
-            #active_call_window.is-pip .call-type-icon { width: 32px; height: 32px; }
-            #active_call_window.is-pip .call-type-icon span { font-size: 18px; }
-            #active_call_window.is-pip .call-window-body { padding: 10px 14px 12px; text-align: left; }
+            #active_call_window.is-pip .call-window-header {
+                padding: 10px 12px;
+            }
+            #active_call_window.is-pip .call-type-icon {
+                width: 32px;
+                height: 32px;
+            }
+            #active_call_window.is-pip .call-type-icon span {
+                font-size: 18px;
+            }
+            #active_call_window.is-pip .call-window-body {
+                padding: 10px 14px 12px;
+                text-align: left;
+            }
             #active_call_window.is-pip .call-avatar,
             #active_call_window.is-pip .call-patient-number,
-            #active_call_window.is-pip .call-ringing-indicator { display: none !important; }
-            #active_call_window.is-pip .call-patient-name { font-size: 15px; line-height: 1.25; }
+            #active_call_window.is-pip .call-ringing-indicator {
+                display: none !important;
+            }
+            #active_call_window.is-pip .call-patient-name {
+                font-size: 15px;
+                line-height: 1.25;
+            }
             #active_call_window.is-pip .call-status,
-            #active_call_window.is-pip .call-duration { display: inline-block; margin-top: 4px; font-size: 12px; }
-            #active_call_window.is-pip .call-duration::before { content: "\00a0\2022\00a0"; }
-            #active_call_window.is-pip .call-controls { justify-content: flex-end; gap: 9px; margin-top: 10px; }
-            #active_call_window.is-pip .call-control { width: 38px; height: 38px; }
-            #active_call_window.is-pip .call-control span { font-size: 19px; }
+            #active_call_window.is-pip .call-duration {
+                display: inline-block;
+                margin-top: 4px;
+                font-size: 12px;
+            }
+            #active_call_window.is-pip .call-duration::before {
+                content: "\00a0\2022\00a0";
+            }
+            #active_call_window.is-pip .call-controls {
+                justify-content: flex-end;
+                gap: 9px;
+                margin-top: 10px;
+            }
+            #active_call_window.is-pip .call-control {
+                width: 38px;
+                height: 38px;
+            }
+            #active_call_window.is-pip .call-control span {
+                font-size: 19px;
+            }
             .call-avatar {
                 width: 78px;
                 height: 78px;
@@ -285,8 +323,14 @@
                 color: #495057;
                 font-size: 13px;
             }
-            .incoming-call-pip:hover { background: #f8f9fa; }
-            .incoming-call-pip span { font-size: 18px; vertical-align: -4px; margin-right: 4px; }
+            .incoming-call-pip:hover {
+                background: #f8f9fa;
+            }
+            .incoming-call-pip span {
+                font-size: 18px;
+                vertical-align: -4px;
+                margin-right: 4px;
+            }
             .call-controls {
                 margin-top: 25px;
                 display: flex;
@@ -329,33 +373,68 @@
     <body>
         <section id="login_screen">
             <div class="login-card">
-                <img src="./assets/images/login-logo.png" alt="Logo" class="login-logo" />
+                <img
+                    src="./assets/images/login-logo.png"
+                    alt="Logo"
+                    class="login-logo"
+                />
                 <div class="login-title">Doctor Voice Calling</div>
                 <div class="login-subtitle">Connect to Bandwidth Voice</div>
                 <div class="text-start mb-3">
-                    <label for="doctor_id" class="form-label fw-semibold">Doctor</label>
+                    <label for="doctor_id" class="form-label fw-semibold"
+                        >Doctor</label
+                    >
                     <select id="doctor_id" class="form-select">
                         <option value="D101">D101 - Doctor 101</option>
                         <option value="D102">D102 - Doctor 102</option>
                     </select>
                 </div>
-                <button type="button" id="btn_login" class="btn btn-primary login-button">Login</button>
-                <div id="login_error" class="text-danger small mt-3 d-none"></div>
+                <button
+                    type="button"
+                    id="btn_login"
+                    class="btn btn-primary login-button"
+                >
+                    Login
+                </button>
+                <div
+                    id="login_error"
+                    class="text-danger small mt-3 d-none"
+                ></div>
             </div>
         </section>
 
         <section id="app_screen">
             <header class="app-header">
                 <div class="container h-100">
-                    <div class="d-flex align-items-center justify-content-between h-100">
-                        <div class="d-flex align-items-center justify-content-between gap-3">
-                            <img src="./assets/images/logo.png" alt="Logo" class="header-logo" />
+                    <div
+                        class="d-flex align-items-center justify-content-between h-100"
+                    >
+                        <div
+                            class="d-flex align-items-center justify-content-between gap-3"
+                        >
+                            <img
+                                src="./assets/images/logo.png"
+                                alt="Logo"
+                                class="header-logo"
+                            />
                             <h4 class="mb-0">Humhealth Call POC</h4>
                         </div>
                         <div class="doctor-info">
-                            <span id="doctor_status" class="badge rounded-pill text-bg-success">Connected</span>
-                            <span class="fw-semibold" id="logged_in_doctor">Doctor</span>
-                            <button type="button" id="btn_logout" class="btn btn-outline-secondary btn-sm">Logout</button>
+                            <span
+                                id="doctor_status"
+                                class="badge rounded-pill text-bg-success"
+                                >Connected</span
+                            >
+                            <span class="fw-semibold" id="logged_in_doctor"
+                                >Doctor</span
+                            >
+                            <button
+                                type="button"
+                                id="btn_logout"
+                                class="btn btn-outline-secondary btn-sm"
+                            >
+                                Logout
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -364,7 +443,9 @@
             <main class="container patients-container">
                 <div class="mb-4">
                     <h4 class="mb-1">Patients</h4>
-                    <p class="text-muted mb-0">Select a patient to start a PSTN call.</p>
+                    <p class="text-muted mb-0">
+                        Select a patient to start a PSTN call.
+                    </p>
                 </div>
                 <div id="patient_list" class="row g-3"></div>
             </main>
@@ -377,63 +458,129 @@
                         <span class="material-symbols-outlined">call</span>
                     </div>
                     <div>
-                        <div id="call_window_title" class="call-window-title">Active Call</div>
-                        <div id="call_window_subtitle" class="call-window-subtitle">Bandwidth Voice</div>
+                        <div id="call_window_title" class="call-window-title">
+                            Active Call
+                        </div>
+                        <div
+                            id="call_window_subtitle"
+                            class="call-window-subtitle"
+                        >
+                            Bandwidth Voice
+                        </div>
                     </div>
                 </div>
 
                 <div class="call-window-actions">
-                    <button type="button" id="btn_popout_call" class="call-window-button" title="Open call in Picture-in-Picture" aria-label="Open call in Picture-in-Picture">
-                        <span class="material-symbols-outlined">picture_in_picture_alt</span>
+                    <button
+                        type="button"
+                        id="btn_popout_call"
+                        class="call-window-button"
+                        title="Open call in Picture-in-Picture"
+                        aria-label="Open call in Picture-in-Picture"
+                    >
+                        <span class="material-symbols-outlined"
+                            >picture_in_picture_alt</span
+                        >
                     </button>
-                    <button type="button" id="btn_minimize_call" class="call-window-button" title="Expand call" aria-label="Expand call">
-                        <span class="material-symbols-outlined">open_in_full</span>
+                    <button
+                        type="button"
+                        id="btn_minimize_call"
+                        class="call-window-button"
+                        title="Expand call"
+                        aria-label="Expand call"
+                    >
+                        <span class="material-symbols-outlined"
+                            >open_in_full</span
+                        >
                     </button>
                 </div>
             </div>
 
             <div id="call_window_body" class="call-window-body">
-                <div id="call_ringing_indicator" class="call-ringing-indicator d-none">
+                <div
+                    id="call_ringing_indicator"
+                    class="call-ringing-indicator d-none"
+                >
                     <span></span>
                     <span></span>
                     <span></span>
                 </div>
 
                 <div class="call-avatar">
-                    <span id="call_avatar_icon" class="material-symbols-outlined">person</span>
+                    <span
+                        id="call_avatar_icon"
+                        class="material-symbols-outlined"
+                        >person</span
+                    >
                 </div>
 
-                <div id="call_patient_name" class="call-patient-name">Patient</div>
-                <div id="call_patient_number" class="call-patient-number">x</div>
+                <div id="call_patient_name" class="call-patient-name">
+                    Patient
+                </div>
+                <div id="call_patient_number" class="call-patient-number">
+                    x
+                </div>
                 <div id="call_status" class="call-status">Calling...</div>
                 <div id="call_duration" class="call-duration">00:00</div>
 
-                <div id="incoming_call_controls" class="incoming-call-controls d-none">
-                    <button type="button" id="btn_open_incoming_pip" class="incoming-call-pip" title="Open incoming call in Picture-in-Picture">
-                        <span class="material-symbols-outlined">picture_in_picture_alt</span>
+                <div
+                    id="incoming_call_controls"
+                    class="incoming-call-controls d-none"
+                >
+                    <button
+                        type="button"
+                        id="btn_open_incoming_pip"
+                        class="incoming-call-pip"
+                        title="Open incoming call in Picture-in-Picture"
+                    >
+                        <span class="material-symbols-outlined"
+                            >picture_in_picture_alt</span
+                        >
                         Open in Picture-in-Picture
                     </button>
-                    <button type="button" id="btn_decline_incoming_call" class="incoming-call-button incoming-call-decline">
+                    <button
+                        type="button"
+                        id="btn_decline_incoming_call"
+                        class="incoming-call-button incoming-call-decline"
+                    >
                         <span class="material-symbols-outlined">call_end</span>
                         <span>Decline</span>
                     </button>
-                    <button type="button" id="btn_accept_incoming_call" class="incoming-call-button incoming-call-accept">
+                    <button
+                        type="button"
+                        id="btn_accept_incoming_call"
+                        class="incoming-call-button incoming-call-accept"
+                    >
                         <span class="material-symbols-outlined">call</span>
                         <span>Accept</span>
                     </button>
                 </div>
 
                 <div id="active_call_controls" class="call-controls">
-                    <button type="button" id="btn_mute_call" class="call-control call-control-normal" title="Mute">
+                    <button
+                        type="button"
+                        id="btn_mute_call"
+                        class="call-control call-control-normal"
+                        title="Mute"
+                    >
                         <span class="material-symbols-outlined">mic</span>
                     </button>
-                
 
-                    <button type="button" id="btn_speaker_call" class="call-control call-control-normal" title="Speaker">
+                    <button
+                        type="button"
+                        id="btn_speaker_call"
+                        class="call-control call-control-normal"
+                        title="Speaker"
+                    >
                         <span class="material-symbols-outlined">volume_up</span>
                     </button>
 
-                    <button type="button" id="btn_end_call" class="call-control call-control-end" title="End Call">
+                    <button
+                        type="button"
+                        id="btn_end_call"
+                        class="call-control call-control-end"
+                        title="End Call"
+                    >
                         <span class="material-symbols-outlined">call_end</span>
                     </button>
                 </div>
@@ -442,10 +589,17 @@
 
         <audio id="remote_audio" autoplay playsinline></audio>
 
-        <audio id="inbound_ringtone" src="./assets/audio/inbound-ringtone.mp3" loop preload="auto"></audio>
+        <audio
+            id="inbound_ringtone"
+            src="./assets/audio/inbound-ringtone.mp3"
+            loop
+            preload="auto"
+        ></audio>
 
         <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
         <script src="/dist/bandwidth.bundle.js"></script>
+        <script src="/outbound.code.js"></script>
+        <script src="/inbound.code.js"></script>
         <script src="/code.js"></script>
     </body>
 </html>
