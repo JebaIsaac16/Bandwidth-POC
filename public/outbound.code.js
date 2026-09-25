@@ -11,6 +11,7 @@
  * The outbound call flow itself is unchanged.
  * Added: server hang-up events so the UI closes when the
  * patient hangs up, doesn't answer, or the line is busy.
+ * Added: verification progress while the patient enters DOB + name.
  */
 
 window.bandwidthOutboundMixin = function () {
@@ -96,10 +97,7 @@ window.bandwidthOutboundMixin = function () {
                 })
                     .done(function (response) {
                         if (response.success && response.eligible) {
-                            console.log(
-                                "BRTC endpoint is eligible:",
-                                endpointId,
-                            );
+                            console.log("BRTC endpoint is eligible:", endpointId);
 
                             resolve(response);
 
@@ -209,10 +207,7 @@ window.bandwidthOutboundMixin = function () {
 
             $(this.selectors.callStatus).text("Calling...");
 
-            console.log(
-                "Requesting BRTC outbound connection:",
-                patient.phoneNumber,
-            );
+            console.log("Requesting BRTC outbound connection:", patient.phoneNumber);
 
             await window.bandwidthRtc.requestOutboundConnection(
                 patient.phoneNumber,
@@ -223,9 +218,7 @@ window.bandwidthOutboundMixin = function () {
         } catch (error) {
             console.error("BRTC outbound connection failed:", error);
 
-            await this.handleCallFailure(
-                error?.message || "Unable to start the call.",
-            );
+            await this.handleCallFailure(error?.message || "Unable to start the call.");
         }
     };
 
@@ -270,6 +263,15 @@ window.bandwidthOutboundMixin = function () {
 
                 return true;
 
+            case "callVerification":
+                if (data.direction !== "outbound") {
+                    return false;
+                }
+
+                this.handleOutboundVerification(data);
+
+                return true;
+
             case "callEnded":
                 if (data.direction === "inbound") {
                     return false;
@@ -306,6 +308,42 @@ window.bandwidthOutboundMixin = function () {
     };
 
     /*
+     * Patient answered and is entering DOB + name.
+     */
+
+    this.handleOutboundVerification = function (data) {
+        if (!this.isOutboundCallInProgress()) {
+            return;
+        }
+
+        if (data.callId && this.activeOutboundCallId && data.callId !== this.activeOutboundCallId) {
+            return;
+        }
+
+        switch (data.status) {
+            case "started":
+                $(this.selectors.callStatus).text("Patient answered · verifying identity...");
+                $(this.selectors.callWindowSubtitle).text("Verifying DOB + name");
+                break;
+
+            case "verified":
+                $(this.selectors.callStatus).text("Identity verified · connecting...");
+                $(this.selectors.callWindowSubtitle).text("✓ Verified (DOB + name)");
+                break;
+
+            case "failed":
+                $(this.selectors.callStatus).text("Verification failed");
+                $(this.selectors.callWindowSubtitle).text("⚠ Not verified");
+                break;
+
+            case "skipped":
+                $(this.selectors.callStatus).text("Connecting...");
+                $(this.selectors.callWindowSubtitle).text("⚠ Not verified (number not in directory)");
+                break;
+        }
+    };
+
+    /*
      * Patient hung up / didn't answer / busy / failed.
      */
 
@@ -318,11 +356,7 @@ window.bandwidthOutboundMixin = function () {
             return; // late event for the previous call
         }
 
-        if (
-            data.callId &&
-            this.activeOutboundCallId &&
-            data.callId !== this.activeOutboundCallId
-        ) {
+        if (data.callId && this.activeOutboundCallId && data.callId !== this.activeOutboundCallId) {
             return; // event for a different call
         }
 
@@ -339,10 +373,7 @@ window.bandwidthOutboundMixin = function () {
         const doctorSession = this.getDoctorSession();
         const patient = this.activePatient;
 
-        console.log(
-            "Ending outbound call:",
-            patient ? patient.phoneNumber : "",
-        );
+        console.log("Ending outbound call:", patient ? patient.phoneNumber : "");
 
         if (doctorSession) {
             try {

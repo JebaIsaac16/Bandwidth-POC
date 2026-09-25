@@ -5,7 +5,11 @@
  *
  * Patient calls the facility number
  *   ↓
- * Identify patient → assigned doctor ONLY (no fallback doctor)
+ * Caller verification (verification.server.js):
+ *   DOB on keypad → read back, press 1 → say first name → say last name
+ *   → DOB exact + names fuzzy → patient identified
+ *   ↓
+ * Verified patient → assigned doctor ONLY (no fallback doctor)
  *   ↓
  * Doctor offline      → "not available, try again later" → hangup
  * Doctor free         → doctor's browser rings,
@@ -30,7 +34,7 @@ module.exports = function registerInbound(app, ctx) {
         patientDoctorMap,
         redirectVoiceCall,
         endVoiceCallSafe,
-        getPatientIdFromPhone,
+        verification,
         isDoctorOnline,
         getDoctorCallState,
         setDoctorBusy,
@@ -55,15 +59,16 @@ module.exports = function registerInbound(app, ctx) {
     const OFFLINE_GRACE_MS = 30 * 1000; // doctor offline this long → release queue
     const SWEEP_INTERVAL_MS = 10 * 1000;
 
+    // Short on purpose: Bandwidth bills speech per 100 characters.
     const MESSAGES = {
-        unknown:
-            "We could not match this phone number to a patient. Please call back from your registered phone number.",
-        offline: "Your doctor is not available right now. Please hang up and try again later.",
-        full: "Your doctor has too many callers waiting right now. Please hang up and try again later.",
-        declined: "Your doctor is unable to take your call right now. Please hang up and try again later.",
-        missed: "Your doctor was unable to answer. Please hang up and try again later.",
-        timeout: "Your doctor is still unavailable. Please hang up and try again later.",
-        connecting: "Please hold while we connect you to your doctor.",
+        unknown: "We can't find your record. Please call the front desk.",
+        offline: "Your doctor is unavailable. Please call again later.",
+        full: "Too many callers waiting. Please call again later.",
+        declined: "Your doctor can't take your call. Please call again later.",
+        missed: "Your doctor didn't answer. Please call again later.",
+        timeout: "Your doctor is still busy. Please call again later.",
+        connecting: "Thank you. Please hold for your doctor.",
+        unverified: "We couldn't verify you. Please call the front desk.",
     };
 
     /* ----------------------------------------
@@ -145,13 +150,15 @@ module.exports = function registerInbound(app, ctx) {
         } else {
             const position = queuePosition(session);
 
-            speech = session.announcedQueue
-                ? `You are number ${position} in line. Please continue to hold, or hang up and try again later.`
-                : `Your doctor is currently with another patient. You are number ${position} in line. ` +
-                  "Please stay on the line and you will be connected as soon as your doctor is available, " +
-                  "or hang up and try again later.";
+            // Speak only when the position changes → far fewer credits.
+            if (!session.announcedQueue) {
+                speech = `Your doctor is busy. You are number ${position} in line. Please hold or call later.`;
+            } else if (position !== session.announcedPosition) {
+                speech = `You are now number ${position} in line.`;
+            }
 
             session.announcedQueue = true;
+            session.announcedPosition = position;
             pause = QUEUE_HOLD_PAUSE_SECONDS;
         }
 
@@ -265,6 +272,7 @@ module.exports = function registerInbound(app, ctx) {
             patientId: session.patientId,
             from: session.from,
             to: session.to,
+            verification: session.verification,
             waitedSeconds: Math.round((Date.now() - session.createdAt) / 1000),
         });
 
@@ -420,6 +428,8 @@ module.exports = function registerInbound(app, ctx) {
     /* ----------------------------------------
      * INBOUND CALL INITIATED
      * (Voice application "Call Initiated" URL)
+     *
+     * Every caller is verified first.
      * ---------------------------------------- */
 
     app.post("/api/callbacks/voice/initiate", function (req, res) {
@@ -429,21 +439,68 @@ module.exports = function registerInbound(app, ctx) {
 
         console.log("=================================");
         console.log("Inbound call:", callId, "| from:", from, "| to:", to);
-
-        const patientId = getPatientIdFromPhone(from);
-        const doctorId = patientId ? patientDoctorMap.get(patientId) || null : null;
-
-        console.log("Patient:", patientId || "UNKNOWN", "| Assigned doctor:", doctorId || "NONE");
         console.log("=================================");
 
-        if (!callId || !doctorId) {
-            return sendBxml(res, unavailableVerbs("unknown"));
+        if (!callId) {
+            return sendBxml(res, "<Hangup/>");
+        }
+
+        sendBxml(
+            res,
+            verification.start(callId, {
+                purpose: "inbound",
+                from: from,
+                to: to,
+                greeting: "Thanks for calling.",
+            }),
+        );
+    });
+
+    /* ----------------------------------------
+     * AFTER VERIFICATION
+     * ---------------------------------------- */
+
+    verification.registerPurpose("inbound", {
+        onVerified: function (verifySession, result) {
+            return routeVerifiedCall({
+                callId: verifySession.callId,
+                from: verifySession.from,
+                to: verifySession.to,
+                patientId: result.patientId,
+                verification: {
+                    verified: true,
+                    method: result.method,
+                    heardName: `${result.heardFirstName} ${result.heardLastName}`.trim(),
+                },
+            });
+        },
+
+        onFailed: function (verifySession, result) {
+            console.log("Inbound caller NOT verified:", verifySession.callId, "| reason:", result.reason);
+
+            return unavailableVerbs("unverified");
+        },
+    });
+
+    /*
+     * Verified patient → assigned doctor (ring now, or queue).
+     * Returns BXML verbs.
+     */
+
+    function routeVerifiedCall(info) {
+        const { callId, from, to, patientId } = info;
+        const doctorId = patientDoctorMap.get(patientId) || null;
+
+        console.log("Verified patient:", patientId, "| Assigned doctor:", doctorId || "NONE");
+
+        if (!doctorId) {
+            return unavailableVerbs("unknown");
         }
 
         if (!isDoctorOnline(doctorId)) {
             console.log("Assigned doctor offline:", doctorId);
 
-            return sendBxml(res, unavailableVerbs("offline"));
+            return unavailableVerbs("offline");
         }
 
         const doctor = getInboundDoctor(doctorId);
@@ -451,7 +508,7 @@ module.exports = function registerInbound(app, ctx) {
         if (doctor.queue.length >= MAX_QUEUE_SIZE) {
             console.log("Queue full for doctor:", doctorId);
 
-            return sendBxml(res, unavailableVerbs("full"));
+            return unavailableVerbs("full");
         }
 
         const session = {
@@ -460,6 +517,7 @@ module.exports = function registerInbound(app, ctx) {
             doctorId: doctorId,
             from: from,
             to: to,
+            verification: info.verification,
             status: "QUEUED",
             endpointId: null,
             ringTimer: null,
@@ -488,8 +546,8 @@ module.exports = function registerInbound(app, ctx) {
 
         broadcastQueue(doctorId);
 
-        sendBxml(res, holdVerbs(session));
-    });
+        return holdVerbs(session);
+    }
 
     /* ----------------------------------------
      * HOLD LOOP

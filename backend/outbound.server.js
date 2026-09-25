@@ -9,7 +9,12 @@
  *   ↓
  * Create Voice call to the patient
  *   ↓
- * Patient answers → answer callback → <Connect><Endpoint>
+ * Patient answers → answer callback
+ *   ↓
+ * Caller verification (verification.server.js):
+ *   DOB on keypad → read back, press 1 → say first name → say last name
+ *   ↓
+ * Verified → <Connect><Endpoint>   |   Not verified → message + hangup
  *   ↓
  * Disconnect (routed here by server.js) → tell the doctor's browser
  *
@@ -33,6 +38,9 @@ module.exports = function registerOutbound(app, ctx) {
         sendDoctorEvent,
         safeJsonParse,
         sendBxml,
+        xmlEscape,
+        verification,
+        findPatientByPhone,
     } = ctx;
 
     const {
@@ -54,6 +62,7 @@ module.exports = function registerOutbound(app, ctx) {
     const pendingBrtcCallsByCallId = new Map(); // callId → pending call (before answer)
     const activeOutboundCallsById = new Map(); // callId → endpointId (after answer)
     const activeOutboundCallByEndpoint = new Map(); // endpointId → callId (after answer)
+    const verificationFailedCalls = new Set(); // callIds that failed verification
 
     /* ----------------------------------------
      * CREATE VOICE CALL (unchanged)
@@ -229,9 +238,16 @@ module.exports = function registerOutbound(app, ctx) {
             activeOutboundCallByEndpoint.delete(endpointId);
         }
 
-        console.log("Outbound call ended:", callId, "| cause:", event.cause || "hangup");
+        let cause = event.cause;
 
-        notifyOutboundEnded(endpointId, callId, event.cause);
+        if (verificationFailedCalls.has(callId)) {
+            verificationFailedCalls.delete(callId);
+            cause = "verification-failed";
+        }
+
+        console.log("Outbound call ended:", callId, "| cause:", cause || "hangup");
+
+        notifyOutboundEnded(endpointId, callId, cause);
 
         return true;
     }
@@ -287,9 +303,103 @@ module.exports = function registerOutbound(app, ctx) {
             });
         }
 
-        console.log("Connecting Voice call", callId, "→ BRTC endpoint", endpointId);
+        /*
+         * Verify the person who answered before connecting the doctor.
+         */
 
-        sendBxml(res, `<Connect><Endpoint>${endpointId}</Endpoint></Connect>`);
+        const patient = findPatientByPhone(pendingCall.to);
+
+        if (!patient) {
+            // Number is not in the patient directory → nothing to verify against.
+            console.warn("Outbound number not in patient directory, connecting UNVERIFIED:", pendingCall.to);
+
+            if (doctorId) {
+                sendDoctorEvent(doctorId, {
+                    type: "callVerification",
+                    direction: "outbound",
+                    callId: callId,
+                    status: "skipped",
+                });
+            }
+
+            return sendBxml(res, connectVerbs(endpointId));
+        }
+
+        if (doctorId) {
+            sendDoctorEvent(doctorId, {
+                type: "callVerification",
+                direction: "outbound",
+                callId: callId,
+                patientId: patient.id,
+                status: "started",
+            });
+        }
+
+        console.log("Verifying answered patient:", patient.id, "| call:", callId);
+
+        sendBxml(
+            res,
+            verification.start(callId, {
+                purpose: "outbound",
+                expectedPatientId: patient.id,
+                from: pendingCall.from,
+                to: pendingCall.to,
+                data: { endpointId: endpointId, doctorId: doctorId },
+                greeting: "Hi, this is your doctor's office.",
+            }),
+        );
+    });
+
+    function connectVerbs(endpointId) {
+        return `<Connect><Endpoint>${xmlEscape(endpointId)}</Endpoint></Connect>`;
+    }
+
+    /* ----------------------------------------
+     * AFTER VERIFICATION
+     * ---------------------------------------- */
+
+    verification.registerPurpose("outbound", {
+        onVerified: function (verifySession, result) {
+            const { endpointId, doctorId } = verifySession.data;
+
+            if (doctorId) {
+                sendDoctorEvent(doctorId, {
+                    type: "callVerification",
+                    direction: "outbound",
+                    callId: verifySession.callId,
+                    patientId: result.patientId,
+                    status: "verified",
+                    method: result.method,
+                });
+            }
+
+            console.log("Connecting verified patient to doctor endpoint:", endpointId);
+
+            return (
+                `<SpeakSentence>${xmlEscape("Thank you. Connecting you now.")}</SpeakSentence>` +
+                connectVerbs(endpointId)
+            );
+        },
+
+        onFailed: function (verifySession, result) {
+            const { doctorId } = verifySession.data;
+
+            verificationFailedCalls.add(verifySession.callId);
+
+            if (doctorId) {
+                sendDoctorEvent(doctorId, {
+                    type: "callVerification",
+                    direction: "outbound",
+                    callId: verifySession.callId,
+                    status: "failed",
+                    reason: result.reason,
+                });
+            }
+
+            return (
+                `<SpeakSentence>${xmlEscape("We couldn't verify you. The office will call back. Goodbye.")}</SpeakSentence>` + "<Hangup/>"
+            );
+        },
     });
 
     /* ----------------------------------------

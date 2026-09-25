@@ -8,6 +8,7 @@
  *                        shared webhooks (endpoint events, disconnect)
  * outbound.server.js  → doctor calls patient
  * inbound.server.js   → patient calls doctor (assigned doctor + queue)
+ * verification.server.js → shared caller verification (DOB + spoken name)
  *
  * Bandwidth dashboard (Voice application):
  *   Call Initiated URL : {NGROK_URL}/api/callbacks/voice/initiate
@@ -70,7 +71,9 @@ const VOICE_FACILITY_NUMBER = process.env.BANDWIDTH_VOICE_FACILITY_NUMBER;
 const VOICE_PATIENT_NUMBER = process.env.BANDWIDTH_VOICE_PATIENT_NUMBER;
 
 if (!VOICE_APPLICATION_ID || !VOICE_FACILITY_NUMBER || !VOICE_PATIENT_NUMBER) {
-    throw new Error("Missing Bandwidth Voice Application configuration in .env");
+    throw new Error(
+        "Missing Bandwidth Voice Application configuration in .env",
+    );
 }
 
 /* ----------------------------------------
@@ -99,31 +102,73 @@ const doctorEventClients = new Map(); // doctorId → Set(res)
 const doctorCallState = new Map();
 
 /* ----------------------------------------
- * PATIENT → ASSIGNED DOCTOR
+ * PATIENT DIRECTORY
+ *
+ * Used for:
+ * - caller verification (DOB + first name + last name)
+ * - patient → assigned doctor
+ * - patient list in the browser (GET /api/patients, no DOB sent)
+ *
+ * EDIT these to your real test patients:
+ *   dob          → "YYYY-MM-DD"
+ *   phoneNumber  → E.164, must match the number the doctor dials
+ *                  and the number the patient calls from
  * ---------------------------------------- */
 
-const patientDoctorMap = new Map([
-    ["PT001", "D101"],
-    ["PT002", "D102"],
-    ["PT003", "D101"],
-]);
+const patients = [
+    {
+        id: "PT001",
+        firstName: "Praveen",
+        lastName: "Kumar",
+        dob: "2004-01-01",
+        phoneNumber:
+            process.env.BANDWIDTH_PATIENT_1_PHONE || VOICE_PATIENT_NUMBER,
+        doctorId: "D101",
+    },
+    {
+        id: "PT002",
+        firstName: "Bot",
+        lastName: "Testing",
+        dob: "1950-01-01",
+        phoneNumber: process.env.BANDWIDTH_PATIENT_2_PHONE || "",
+        doctorId: "D102",
+    },
+    {
+        id: "PT003",
+        firstName: "Patient",
+        lastName: "Three",
+        dob: "1948-12-25",
+        phoneNumber: process.env.BANDWIDTH_PATIENT_3_PHONE || "",
+        doctorId: "D101",
+    },
+];
 
-/* ----------------------------------------
- * PATIENT PHONE → PATIENT ID
- * ---------------------------------------- */
+const patientDoctorMap = new Map(
+    patients.map(function (patient) {
+        return [patient.id, patient.doctorId];
+    }),
+);
 
-const patientPhoneMap = new Map();
+const patientPhoneMap = new Map(
+    patients
+        .filter(function (patient) {
+            return patient.phoneNumber;
+        })
+        .map(function (patient) {
+            return [patient.phoneNumber, patient.id];
+        }),
+);
 
-if (process.env.BANDWIDTH_PATIENT_1_PHONE || VOICE_PATIENT_NUMBER) {
-    patientPhoneMap.set(process.env.BANDWIDTH_PATIENT_1_PHONE || VOICE_PATIENT_NUMBER, "PT001");
+function getPatientById(patientId) {
+    return (
+        patients.find(function (patient) {
+            return patient.id === patientId;
+        }) || null
+    );
 }
 
-if (process.env.BANDWIDTH_PATIENT_2_PHONE) {
-    patientPhoneMap.set(process.env.BANDWIDTH_PATIENT_2_PHONE, "PT002");
-}
-
-if (process.env.BANDWIDTH_PATIENT_3_PHONE) {
-    patientPhoneMap.set(process.env.BANDWIDTH_PATIENT_3_PHONE, "PT003");
+function findPatientByPhone(phoneNumber) {
+    return getPatientById(patientPhoneMap.get(phoneNumber)) || null;
 }
 
 /* ----------------------------------------
@@ -151,7 +196,11 @@ function xmlEscape(value) {
 
 function sendBxml(res, verbs) {
     res.set("Content-Type", "application/xml; charset=utf-8");
-    res.send('<?xml version="1.0" encoding="UTF-8"?><Response>' + verbs + "</Response>");
+    res.send(
+        '<?xml version="1.0" encoding="UTF-8"?><Response>' +
+            verbs +
+            "</Response>",
+    );
 }
 
 function getPatientIdFromPhone(phoneNumber) {
@@ -228,7 +277,12 @@ function removeDoctorEndpointMapping(endpointId) {
         if (mappedEndpointId === endpointId) {
             doctorEndpointMap.delete(doctorId);
 
-            console.log("Doctor endpoint mapping removed:", doctorId, "→", endpointId);
+            console.log(
+                "Doctor endpoint mapping removed:",
+                doctorId,
+                "→",
+                endpointId,
+            );
         }
     }
 }
@@ -318,9 +372,18 @@ async function endVoiceCallSafe(callId) {
         const status = error.response?.status;
 
         if (status && status < 500) {
-            console.log("Voice call already ended:", callId, "| status:", status);
+            console.log(
+                "Voice call already ended:",
+                callId,
+                "| status:",
+                status,
+            );
         } else {
-            console.error("Failed to end Voice call:", callId, error.response?.data || error.message);
+            console.error(
+                "Failed to end Voice call:",
+                callId,
+                error.response?.data || error.message,
+            );
         }
 
         return false;
@@ -373,7 +436,14 @@ function setDoctorBusy(doctorId, reason, callId) {
     state.busyReason = reason;
     state.activeCallId = callId || null;
 
-    console.log("Doctor busy:", doctorId, "| reason:", reason, "| call:", callId || "-");
+    console.log(
+        "Doctor busy:",
+        doctorId,
+        "| reason:",
+        reason,
+        "| call:",
+        callId || "-",
+    );
 }
 
 /*
@@ -408,6 +478,8 @@ function sendDoctorEvent(doctorId, event) {
 
     const message = `data: ${JSON.stringify(event)}\n\n`;
 
+    console.log(`Doctor SSE → ${doctorId}:`, JSON.stringify(event));
+
     for (const client of clients) {
         try {
             client.write(message);
@@ -438,7 +510,10 @@ const ctx = {
     brtcEndpointStatus,
     doctorEndpointMap,
     doctorEventClients,
+    patients,
     patientDoctorMap,
+    getPatientById,
+    findPatientByPhone,
     getAccessToken,
     endVoiceCall,
     endVoiceCallSafe,
@@ -455,6 +530,10 @@ const ctx = {
     sendBxml,
 };
 
+// Shared caller verification (DOB + name), used by both directions.
+const verificationModule = require("./verification.server")(app, ctx);
+ctx.verification = verificationModule;
+
 const outboundModule = require("./outbound.server")(app, ctx);
 const inboundModule = require("./inbound.server")(app, ctx);
 
@@ -466,6 +545,24 @@ app.get("/health", (req, res) => {
     res.json({
         success: true,
         message: "Bandwidth Voice POC backend is running",
+    });
+});
+
+/* ----------------------------------------
+ * PATIENT LIST FOR THE BROWSER (no DOB)
+ * ---------------------------------------- */
+
+app.get("/api/patients", (req, res) => {
+    res.json({
+        success: true,
+        patients: patients.map(function (patient) {
+            return {
+                id: patient.id,
+                name: `${patient.firstName} ${patient.lastName}`,
+                phoneNumber: patient.phoneNumber,
+                doctorId: patient.doctorId,
+            };
+        }),
     });
 });
 
@@ -515,7 +612,10 @@ app.post("/api/doctor/session", async (req, res) => {
             const oldStatus = brtcEndpointStatus.get(oldEndpointId);
 
             if (oldStatus?.eligible === true) {
-                console.log("Doctor already has an active eligible endpoint:", oldEndpointId);
+                console.log(
+                    "Doctor already has an active eligible endpoint:",
+                    oldEndpointId,
+                );
 
                 return res.json({
                     success: true,
@@ -547,7 +647,12 @@ app.post("/api/doctor/session", async (req, res) => {
         state.busyReason = null;
         state.activeCallId = null;
 
-        console.log("Doctor endpoint mapping:", doctorId, "→", endpoint.endpointId);
+        console.log(
+            "Doctor endpoint mapping:",
+            doctorId,
+            "→",
+            endpoint.endpointId,
+        );
 
         res.json({
             success: true,
@@ -558,7 +663,10 @@ app.post("/api/doctor/session", async (req, res) => {
             reused: false,
         });
     } catch (error) {
-        console.error("BRTC endpoint creation error:", error.response?.data || error.message);
+        console.error(
+            "BRTC endpoint creation error:",
+            error.response?.data || error.message,
+        );
 
         res.status(error.response?.status || 500).json({
             success: false,
@@ -573,22 +681,24 @@ app.post("/api/doctor/session", async (req, res) => {
  * ---------------------------------------- */
 
 app.get("/api/doctors", (req, res) => {
-    const doctors = Array.from(doctorEndpointMap.entries()).map(([doctorId, endpointId]) => {
-        const status = brtcEndpointStatus.get(endpointId);
-        const callState = getDoctorCallState(doctorId);
+    const doctors = Array.from(doctorEndpointMap.entries()).map(
+        ([doctorId, endpointId]) => {
+            const status = brtcEndpointStatus.get(endpointId);
+            const callState = getDoctorCallState(doctorId);
 
-        return {
-            doctorId: doctorId,
-            endpointId: endpointId,
-            eligible: status?.eligible === true,
-            online: isDoctorOnline(doctorId),
-            busyReason: callState.busyReason,
-            activeCallId: callState.activeCallId,
-            deviceId: status?.deviceId || null,
-            timestamp: status?.timestamp || null,
-            expirationTimestamp: status?.expirationTimestamp || null,
-        };
-    });
+            return {
+                doctorId: doctorId,
+                endpointId: endpointId,
+                eligible: status?.eligible === true,
+                online: isDoctorOnline(doctorId),
+                busyReason: callState.busyReason,
+                activeCallId: callState.activeCallId,
+                deviceId: status?.deviceId || null,
+                timestamp: status?.timestamp || null,
+                expirationTimestamp: status?.expirationTimestamp || null,
+            };
+        },
+    );
 
     res.json({ success: true, doctors: doctors });
 });
@@ -605,7 +715,10 @@ app.delete("/api/doctor/endpoint/:endpointId", async (req, res) => {
     try {
         res.json(await deleteDoctorEndpoint(endpointId));
     } catch (error) {
-        console.error("BRTC endpoint deletion error:", error.response?.data || error.message);
+        console.error(
+            "BRTC endpoint deletion error:",
+            error.response?.data || error.message,
+        );
 
         res.status(error.response?.status || 500).json({
             success: false,
@@ -634,7 +747,10 @@ app.post("/api/doctor/endpoint/cleanup", async (req, res) => {
     try {
         res.json(await deleteDoctorEndpoint(endpointId));
     } catch (error) {
-        console.error("BRTC endpoint cleanup error:", error.response?.data || error.message);
+        console.error(
+            "BRTC endpoint cleanup error:",
+            error.response?.data || error.message,
+        );
 
         res.status(error.response?.status || 500).json({
             success: false,
@@ -693,7 +809,12 @@ app.post("/api/doctor/idle", async (req, res) => {
      */
 
     if (state.activeCallId && state.activeCallId !== pstnCallId) {
-        console.log("Stale idle ignored:", doctorId, "| active:", state.activeCallId);
+        console.log(
+            "Stale idle ignored:",
+            doctorId,
+            "| active:",
+            state.activeCallId,
+        );
 
         return res.json({ success: true, ignored: true });
     }
@@ -727,7 +848,10 @@ app.get("/api/callbacks/test", (req, res) => {
  * ---------------------------------------- */
 
 app.post("/api/callbacks/bandwidth", async (req, res) => {
-    console.log("Bandwidth callback received:", JSON.stringify(req.body, null, 2));
+    console.log(
+        "Bandwidth callback received:",
+        JSON.stringify(req.body, null, 2),
+    );
 
     const event = req.body || {};
 
@@ -790,7 +914,10 @@ app.post("/api/callbacks/bandwidth", async (req, res) => {
  * ---------------------------------------- */
 
 app.post("/api/callbacks/bandwidth-fallback", (req, res) => {
-    console.log("Bandwidth FALLBACK callback received:", JSON.stringify(req.body, null, 2));
+    console.log(
+        "Bandwidth FALLBACK callback received:",
+        JSON.stringify(req.body, null, 2),
+    );
 
     res.sendStatus(200);
 });
@@ -802,13 +929,21 @@ app.post("/api/callbacks/bandwidth-fallback", (req, res) => {
  * ---------------------------------------- */
 
 app.post("/api/callbacks/voice/disconnect", (req, res) => {
-    console.log("Bandwidth Voice DISCONNECT:", JSON.stringify(req.body, null, 2));
+    console.log(
+        "Bandwidth Voice DISCONNECT:",
+        JSON.stringify(req.body, null, 2),
+    );
 
     const event = req.body || {};
 
     try {
+        // Caller may hang up during verification (before inbound/outbound routing).
+        const wasVerifying = verificationModule.handleDisconnect(event);
+
         const handled =
-            inboundModule.handleDisconnect(event) || outboundModule.handleDisconnect(event);
+            inboundModule.handleDisconnect(event) ||
+            outboundModule.handleDisconnect(event) ||
+            wasVerifying;
 
         if (!handled) {
             console.log("Disconnect for untracked call:", event.callId);
@@ -852,7 +987,9 @@ app.get("/api/doctor/events", (req, res) => {
 
     clients.add(res);
 
-    res.write(`data: ${JSON.stringify({ type: "connected", doctorId: doctorId })}\n\n`);
+    res.write(
+        `data: ${JSON.stringify({ type: "connected", doctorId: doctorId })}\n\n`,
+    );
 
     // Show the current waiting list right away.
     inboundModule.broadcastQueue(doctorId);

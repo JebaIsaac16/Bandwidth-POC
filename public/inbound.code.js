@@ -34,6 +34,7 @@ window.bandwidthInboundMixin = function () {
     this.incomingFrom = null;
     this.incomingTo = null;
     this.incomingConnectTimer = null;
+    this.incomingVerification = null;
 
     this.lastQueueCount = 0;
     this.$queueBadge = null;
@@ -251,6 +252,8 @@ window.bandwidthInboundMixin = function () {
                 callData.patientPhoneNumber || callData.from || "Incoming call",
         };
 
+        this.incomingVerification = callData.verification || null;
+
         this.incomingCallActive = true;
         this.incomingCallAccepted = false;
         this.incomingStreamInfo = null;
@@ -269,6 +272,12 @@ window.bandwidthInboundMixin = function () {
         $(this.selectors.callPatientNumber).text(patient.phoneNumber);
         $(this.selectors.callStatus).text("Incoming call");
         $(this.selectors.callDuration).text("00:00");
+
+        $(this.selectors.callWindowSubtitle).text(
+            this.incomingVerification && this.incomingVerification.verified
+                ? "✓ Verified (DOB + name)"
+                : "⚠ Not verified",
+        );
 
         $(this.selectors.callRingingIndicator).removeClass("d-none");
         $(this.selectors.incomingCallControls).removeClass("d-none");
@@ -675,6 +684,7 @@ window.bandwidthInboundMixin = function () {
         this.incomingPstnCallId = null;
         this.incomingFrom = null;
         this.incomingTo = null;
+        this.incomingVerification = null;
         this.incomingStreamInfo = null;
         this.incomingCallActive = false;
         this.incomingCallAccepted = false;

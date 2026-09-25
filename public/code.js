@@ -38,6 +38,7 @@ const bandwidthVoicePoc = function () {
         activeCallControls: "#active_call_controls",
         callWindowHeader: "#call_window_header",
         callWindowBody: "#call_window_body",
+        callWindowSubtitle: "#call_window_subtitle",
         minimizeCallButton: "#btn_minimize_call",
         popoutCallButton: "#btn_popout_call",
         closeCallButton: "#btn_close_call",
@@ -63,12 +64,16 @@ const bandwidthVoicePoc = function () {
      * ----------------------------------------
      * PATIENT DATA (used by outbound list + inbound caller names)
      * ----------------------------------------
+     *
+     * Replaced after login by the server's patient directory
+     * (GET /api/patients) so names and phone numbers always match
+     * what the server verifies against. This list is only a fallback.
      */
 
     this.patients = [
         { id: "PT001", name: "Humworld Testing", phoneNumber: "+17346660002" },
         { id: "PT002", name: "Bot testing", phoneNumber: "+18042221111" },
-        { id: "PT003", name: "Patient 003", phoneNumber: "" },
+        { id: "PT003", name: "Patient 003", phoneNumber: "+12013507115" },
     ];
 
     /*
@@ -189,6 +194,9 @@ const bandwidthVoicePoc = function () {
 
             case "cancel":
                 return "Call cancelled";
+
+            case "verification-failed":
+                return "Verification failed";
 
             case "error":
             case "application-error":
@@ -603,6 +611,39 @@ const bandwidthVoicePoc = function () {
         $(this.selectors.loginButton).prop("disabled", false).text("Login");
     };
 
+    this.loadPatients = async function () {
+        try {
+            const response = await $.ajax({
+                url: `${this.backendUrl}/api/patients`,
+                type: "GET",
+            });
+
+            if (
+                response &&
+                response.success &&
+                Array.isArray(response.patients)
+            ) {
+                this.patients = response.patients.map(function (patient) {
+                    return {
+                        id: patient.id,
+                        name: patient.name,
+                        phoneNumber: patient.phoneNumber || "",
+                    };
+                });
+
+                console.log(
+                    "Patients loaded from server:",
+                    this.patients.length,
+                );
+            }
+        } catch (error) {
+            console.warn(
+                "Unable to load patients from server, using built-in list:",
+                error.status || error,
+            );
+        }
+    };
+
     this.showApplicationScreen = function () {
         $(this.selectors.loginScreen).hide();
 
@@ -618,6 +659,12 @@ const bandwidthVoicePoc = function () {
         $(this.selectors.loginButton).prop("disabled", false).text("Login");
 
         this.renderPatients();
+
+        this.loadPatients().then(
+            function () {
+                this.renderPatients();
+            }.bind(this),
+        );
     };
 
     /*
@@ -863,6 +910,8 @@ const bandwidthVoicePoc = function () {
         $(this.selectors.incomingCallControls).addClass("d-none");
         $(this.selectors.callRingingIndicator).addClass("d-none");
         $(this.selectors.activeCallControls).removeClass("d-none");
+
+        $(this.selectors.callWindowSubtitle).text("Bandwidth Voice");
 
         if (this.isMuted && window.bandwidthRtc) {
             try {
