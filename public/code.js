@@ -57,6 +57,7 @@ const bandwidthVoicePoc = function () {
         declineIncomingCallButton: "#btn_decline_incoming_call",
         callRingingIndicator: "#call_ringing_indicator",
         inboundRingtone: "#inbound_ringtone",
+        floatWidgetButton: "#btn_float_widget",
     };
 
     /*
@@ -68,7 +69,7 @@ const bandwidthVoicePoc = function () {
     this.patients = [
         { id: "PT001", name: "Humworld Testing", phoneNumber: "+17346660002" },
         { id: "PT002", name: "Bot testing", phoneNumber: "+18042221111" },
-        { id: "PT003", name: "Patient 003", phoneNumber: "" },
+        { id: "PT003", name: "Patient 003", phoneNumber: "+12013507115" },
     ];
 
     /*
@@ -86,6 +87,7 @@ const bandwidthVoicePoc = function () {
     this.isCallWindowMinimized = false;
     this.pictureInPictureWindow = null;
     this.pictureInPictureObserver = null;
+    this.pipStandby = false; // keep PiP open between calls ("Float call widget")
     this.isDragging = false;
     this.dragOffsetX = 0;
     this.dragOffsetY = 0;
@@ -510,6 +512,11 @@ const bandwidthVoicePoc = function () {
 
         $(this.selectors.loginError).addClass("d-none").text("");
 
+        // Must run synchronously inside the Login click (user gesture),
+        // otherwise browsers silently refuse to ask for permission.
+        this.requestNotificationPermission();
+        this.registerCallServiceWorker();
+
         $(this.selectors.loginButton)
             .prop("disabled", true)
             .text("Connecting...");
@@ -626,9 +633,39 @@ const bandwidthVoicePoc = function () {
      * ----------------------------------------
      */
 
+    this.isMicrophonePublishedAndLive = function () {
+        const published = this.publishedMicrophoneStream;
+
+        if (!published) {
+            return false;
+        }
+
+        const mediaStream = published.mediaStream || published;
+
+        if (!mediaStream || typeof mediaStream.getAudioTracks !== "function") {
+            // Can't inspect it; trust that it is still published.
+            return true;
+        }
+
+        return mediaStream.getAudioTracks().some(function (track) {
+            return track.readyState === "live";
+        });
+    };
+
+    /*
+     * Make sure the doctor's mic is published and unmuted.
+     * Safe to call before EVERY call (inbound and outbound):
+     * it does nothing if the mic is already published.
+     */
     this.startMicrophone = async function () {
-        if (this.publishedMicrophoneStream) {
+        if (this.isMicrophonePublishedAndLive()) {
             console.log("Doctor microphone is already published.");
+
+            try {
+                window.bandwidthRtc.setMicEnabled(true);
+            } catch (error) {
+                console.warn("Unable to enable microphone:", error);
+            }
 
             return true;
         }
@@ -636,19 +673,15 @@ const bandwidthVoicePoc = function () {
         try {
             console.log("Starting microphone...");
 
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
-                video: false,
-            });
-
-            this.microphoneStream = stream;
-
             if (!window.bandwidthRtc) {
                 throw new Error("BandwidthRtc instance is not available.");
             }
 
-            this.publishedMicrophoneStream =
-                await window.bandwidthRtc.publish(stream);
+            // Same call as at login, so the SDK owns the track.
+            this.publishedMicrophoneStream = await window.bandwidthRtc.publish({
+                audio: true,
+                video: false,
+            });
 
             console.log("Doctor microphone published.");
 
@@ -759,7 +792,10 @@ const bandwidthVoicePoc = function () {
             );
         }
 
-        await this.stopMicrophone();
+        // Keep the mic published for the whole login session.
+        // Unpublishing here broke the NEXT call (the endpoint had
+        // no audio, so Bandwidth played its fallback message).
+        // The mic is only unpublished on logout / page exit.
 
         this.finishCallCleanup();
 
@@ -800,7 +836,7 @@ const bandwidthVoicePoc = function () {
             await this.releaseOutboundConnection(patient);
         }
 
-        await this.stopMicrophone();
+        // Mic stays published between calls (see endCall).
 
         this.scheduleCallCleanup(1500);
     };
@@ -845,10 +881,19 @@ const bandwidthVoicePoc = function () {
         this.clearIncomingConnectTimer();
 
         /*
-         * Remove call UI: PiP window AND in-tab panel.
+         * Remove call UI: in-tab panel always; PiP window only
+         * when the doctor has not asked to keep it floating.
          */
 
-        this.closeCallPictureInPicture();
+        const keepStandbyPip =
+            this.pipStandby &&
+            !this.isPageExiting &&
+            Boolean(this.pictureInPictureWindow) &&
+            !this.pictureInPictureWindow.closed;
+
+        if (!keepStandbyPip) {
+            this.closeCallPictureInPicture();
+        }
 
         $(this.selectors.activeCallWindow).removeClass("is-pip").hide();
 
@@ -864,7 +909,7 @@ const bandwidthVoicePoc = function () {
         $(this.selectors.callRingingIndicator).addClass("d-none");
         $(this.selectors.activeCallControls).removeClass("d-none");
 
-        if (this.isMuted && window.bandwidthRtc) {
+        if (window.bandwidthRtc) {
             try {
                 window.bandwidthRtc.setMicEnabled(true);
             } catch (error) {
@@ -883,6 +928,10 @@ const bandwidthVoicePoc = function () {
         this.isRemoteEnding = false;
 
         this.resetCallControls();
+
+        if (keepStandbyPip) {
+            this.renderStandbyCallWindow();
+        }
 
         console.log("Call frontend state cleaned.");
 
@@ -984,20 +1033,130 @@ const bandwidthVoicePoc = function () {
     };
 
     this.showCallWindow = function (minimized) {
-        this.setCallWindowMinimized(minimized);
+        const callWindow = $("#active_call_window");
 
-        $(this.selectors.activeCallWindow).show();
-
-        if (
-            this.pictureInPictureWindow &&
-            !this.pictureInPictureWindow.closed
-        ) {
-            $(this.selectors.activeCallWindow).hide();
+        if (!callWindow.length) {
+            console.error("Global call window not found.");
+            return;
         }
+
+        callWindow.stop(true, true);
+
+        // Floating PiP already open → the call shows there instead.
+        if (
+            !this.pictureInPictureWindow ||
+            this.pictureInPictureWindow.closed
+        ) {
+            callWindow.show();
+        }
+
+        if (minimized) {
+            callWindow.addClass("is-pip");
+        } else {
+            callWindow.removeClass("is-pip");
+        }
+    };
+
+    this.hideCallWindow = function () {
+        const callWindow = $("#active_call_window");
+
+        if (!callWindow.length) {
+            return;
+        }
+
+        callWindow.stop(true, true);
+        callWindow.removeClass("is-pip");
+        callWindow.hide();
     };
 
     this.closeCallWindow = function () {
         this.endCall();
+    };
+
+    /*
+     * ----------------------------------------
+     * ALERTS OUTSIDE THE PAGE
+     * ----------------------------------------
+     *
+     * A web page can only show something outside its own tab in
+     * two ways, and BOTH need a user click BEFORE the call arrives:
+     *
+     *  1. Desktop notification → permission asked on a click.
+     *  2. Document PiP window  → can only be opened by a click,
+     *     so we open it early ("Float call widget") and keep it
+     *     open between calls. Incoming calls then render inside it.
+     */
+
+    this.requestNotificationPermission = function () {
+        if (!("Notification" in window)) {
+            return;
+        }
+
+        if (Notification.permission !== "default") {
+            return;
+        }
+
+        try {
+            Notification.requestPermission().then(function (permission) {
+                console.log("Notification permission:", permission);
+            });
+        } catch (error) {
+            console.warn("Notification permission request failed:", error);
+        }
+    };
+
+    /*
+     * Registers the service worker (sw.js) that powers the
+     * Accept/Decline action buttons on the desktop notification.
+     * A plain `new Notification(...)` cannot have action buttons —
+     * only a Service Worker's `registration.showNotification()` can.
+     * Safe to call repeatedly: the browser no-ops if already registered.
+     */
+    this.registerCallServiceWorker = function () {
+        if (!("serviceWorker" in navigator)) {
+            return;
+        }
+
+        navigator.serviceWorker.register("/sw.js").catch(function (error) {
+            console.warn("Service worker registration failed:", error);
+        });
+    };
+
+    this.enterStandbyPictureInPicture = async function () {
+        if (!("documentPictureInPicture" in window)) {
+            alert(
+                "Your browser does not support a floating call window. " +
+                    "Use Chrome or Edge, or rely on desktop notifications.",
+            );
+
+            return;
+        }
+
+        this.requestNotificationPermission();
+        this.registerCallServiceWorker();
+
+        this.pipStandby = true;
+
+        if (!this.hasActiveCall() && !this.cleanupTimer) {
+            this.renderStandbyCallWindow();
+        }
+
+        await this.openCallPictureInPicture();
+
+        if (!this.pictureInPictureWindow) {
+            this.pipStandby = false; // user cancelled / browser refused
+        }
+    };
+
+    this.renderStandbyCallWindow = function () {
+        $(this.selectors.callPatientName).text("No active call");
+        $(this.selectors.callPatientNumber).text(this.doctorId || "");
+        $(this.selectors.callStatus).text("Waiting for calls...");
+        $(this.selectors.callDuration).text("");
+
+        $(this.selectors.incomingCallControls).addClass("d-none");
+        $(this.selectors.callRingingIndicator).addClass("d-none");
+        $(this.selectors.activeCallControls).addClass("d-none");
     };
 
     /*
@@ -1035,7 +1194,8 @@ const bandwidthVoicePoc = function () {
             const callWindow = $(this.selectors.activeCallWindow)[0];
 
             // Call may have ended while the PiP window was opening.
-            if (!callWindow || !this.hasActiveCall()) {
+            // (Standby mode keeps the window even with no call.)
+            if (!callWindow || (!this.hasActiveCall() && !this.pipStandby)) {
                 pipWindow.close();
 
                 return;
@@ -1130,6 +1290,12 @@ const bandwidthVoicePoc = function () {
             this.pictureInPictureWindow !== pipWindow
         ) {
             return; // a newer PiP window is open
+        }
+
+        // Still our window → the DOCTOR closed it (code clears the
+        // reference first). Stop keeping a floating window.
+        if (this.pictureInPictureWindow === pipWindow) {
+            this.pipStandby = false;
         }
 
         if (this.pictureInPictureObserver) {
@@ -1302,6 +1468,9 @@ const bandwidthVoicePoc = function () {
             await this.endCall();
         }
 
+        this.pipStandby = false;
+        this.closeCallPictureInPicture();
+
         this.resetInboundQueueUi();
 
         await this.stopMicrophone();
@@ -1385,6 +1554,23 @@ const bandwidthVoicePoc = function () {
             "click",
             function () {
                 this.openCallPictureInPicture();
+            }.bind(this),
+        );
+
+        $(this.selectors.floatWidgetButton).on(
+            "click",
+            function () {
+                this.enterStandbyPictureInPicture();
+            }.bind(this),
+        );
+
+        // Restored sessions skip the Login click, so ask for
+        // notification permission on the first click anywhere.
+        $(document).one(
+            "click",
+            function () {
+                this.requestNotificationPermission();
+                this.registerCallServiceWorker();
             }.bind(this),
         );
 

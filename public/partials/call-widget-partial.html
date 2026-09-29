@@ -1,0 +1,197 @@
+<!-- =========================================================
+     GLOBAL CALL WIDGET PARTIAL
+
+     Include this block on EVERY page of the app, right before
+     </body> — not just index.html. This is what makes the
+     incoming/active call popup available no matter which page
+     the doctor currently has open.
+
+     If your pages are server-rendered, turn this into a real
+     include, e.g.:
+       EJS:        <%- include('partials/call-widget') %>
+       PHP:        <?php include 'partials/call-widget.html'; ?>
+       Handlebars: {{> call-widget}}
+     so you only maintain one copy.
+
+     NOTE: whatever code.js does to set up doctorId / the
+     WebSocket / getDoctorSession() must also run on every page
+     that includes this partial — otherwise the widget exists
+     but has no live connection to receive incoming-call events.
+========================================================= -->
+
+<div id="active_call_window">
+
+    <!-- CALL HEADER -->
+    <div id="call_window_header" class="call-window-header">
+
+        <div class="d-flex align-items-center gap-2">
+
+            <div id="call_type_icon" class="call-type-icon">
+                <span class="material-symbols-outlined">call</span>
+            </div>
+
+            <div>
+                <div id="call_window_title" class="call-window-title">Active Call</div>
+                <div id="call_window_subtitle" class="call-window-subtitle">Bandwidth Voice</div>
+            </div>
+
+        </div>
+
+        <!-- WINDOW ACTIONS -->
+        <div class="call-window-actions">
+
+            <button
+                type="button"
+                id="btn_popout_call"
+                class="call-window-button"
+                title="Open call in Picture-in-Picture"
+                aria-label="Open call in Picture-in-Picture"
+            >
+                <span class="material-symbols-outlined">picture_in_picture_alt</span>
+            </button>
+
+            <button
+                type="button"
+                id="btn_minimize_call"
+                class="call-window-button"
+                title="Expand call"
+                aria-label="Expand call"
+            >
+                <span class="material-symbols-outlined">open_in_full</span>
+            </button>
+
+        </div>
+
+    </div>
+
+    <!-- CALL BODY -->
+    <div id="call_window_body" class="call-window-body">
+
+        <!-- RINGING -->
+        <div id="call_ringing_indicator" class="call-ringing-indicator d-none">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+
+        <!-- AVATAR -->
+        <div class="call-avatar">
+            <span id="call_avatar_icon" class="material-symbols-outlined">person</span>
+        </div>
+
+        <!-- PATIENT NAME -->
+        <div id="call_patient_name" class="call-patient-name">Patient</div>
+
+        <!-- PATIENT NUMBER -->
+        <div id="call_patient_number" class="call-patient-number">x</div>
+
+        <!-- STATUS -->
+        <div id="call_status" class="call-status">Calling...</div>
+
+        <!-- DURATION -->
+        <div id="call_duration" class="call-duration">00:00</div>
+
+        <!-- =================================================
+             INCOMING CALL CONTROLS
+        ================================================== -->
+        <div id="incoming_call_controls" class="incoming-call-controls d-none">
+
+            <!-- PIP -->
+            <button
+                type="button"
+                id="btn_open_incoming_pip"
+                class="incoming-call-pip"
+                title="Open incoming call in Picture-in-Picture"
+            >
+                <span class="material-symbols-outlined">picture_in_picture_alt</span>
+                Open in Picture-in-Picture
+            </button>
+
+            <!-- DECLINE -->
+            <button
+                type="button"
+                id="btn_decline_incoming_call"
+                class="incoming-call-button incoming-call-decline"
+            >
+                <span class="material-symbols-outlined">call_end</span>
+                <span>Decline</span>
+            </button>
+
+            <!-- ACCEPT -->
+            <button
+                type="button"
+                id="btn_accept_incoming_call"
+                class="incoming-call-button incoming-call-accept"
+            >
+                <span class="material-symbols-outlined">call</span>
+                <span>Accept</span>
+            </button>
+
+        </div>
+
+        <!-- =================================================
+             ACTIVE CALL CONTROLS
+        ================================================== -->
+        <div id="active_call_controls" class="call-controls">
+
+            <!-- MUTE -->
+            <button
+                type="button"
+                id="btn_mute_call"
+                class="call-control call-control-normal"
+                title="Mute"
+            >
+                <span class="material-symbols-outlined">mic</span>
+            </button>
+
+            <!-- SPEAKER -->
+            <button
+                type="button"
+                id="btn_speaker_call"
+                class="call-control call-control-normal"
+                title="Speaker"
+            >
+                <span class="material-symbols-outlined">volume_up</span>
+            </button>
+
+            <!-- END -->
+            <button
+                type="button"
+                id="btn_end_call"
+                class="call-control call-control-end"
+                title="End Call"
+            >
+                <span class="material-symbols-outlined">call_end</span>
+            </button>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+<!-- =========================================================
+     AUDIO
+========================================================= -->
+
+<audio id="remote_audio" autoplay playsinline></audio>
+
+<audio
+    id="inbound_ringtone"
+    src="/assets/audio/inbound-ringtone.mp3"
+    loop
+    preload="auto"
+></audio>
+
+
+<!-- =========================================================
+     JAVASCRIPT
+     Same 5 scripts, same order, on every page.
+========================================================= -->
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="../dist/bandwidth.bundle.js"></script>
+<script src="../outbound.code.js"></script>
+<script src="../inbound.code.js"></script>
+<script src="../code.js"></script>

@@ -67,9 +67,8 @@ const FALLBACK_CALLBACK_URL = `${NGROK_URL}/api/callbacks/bandwidth-fallback`;
 const VOICE_API_URL = "https://voice.bandwidth.com/api/v2";
 const VOICE_APPLICATION_ID = process.env.BANDWIDTH_VOICE_APPLICATION_ID;
 const VOICE_FACILITY_NUMBER = process.env.BANDWIDTH_VOICE_FACILITY_NUMBER;
-const VOICE_PATIENT_NUMBER = process.env.BANDWIDTH_VOICE_PATIENT_NUMBER;
 
-if (!VOICE_APPLICATION_ID || !VOICE_FACILITY_NUMBER || !VOICE_PATIENT_NUMBER) {
+if (!VOICE_APPLICATION_ID || !VOICE_FACILITY_NUMBER ) {
     throw new Error("Missing Bandwidth Voice Application configuration in .env");
 }
 
@@ -99,13 +98,23 @@ const doctorEventClients = new Map(); // doctorId → Set(res)
 const doctorCallState = new Map();
 
 /* ----------------------------------------
- * PATIENT → ASSIGNED DOCTOR
+ * PATIENT → ASSIGNED DOCTORS
+ *
+ * >>> CHANGED: each patient is now allocated exactly TWO doctors
+ * (primary + secondary), not one. If the primary doctor doesn't
+ * answer, the inbound call is forwarded to the secondary doctor
+ * before the caller is placed in a shared hold queue for that pair.
+ * See inbound.server.js for the forwarding/queueing logic.
+ *
+ * Legacy plain-string values (e.g. "D101") are still accepted for
+ * backward compatibility and behave exactly as before (single doctor,
+ * no forwarding, no secondary).
  * ---------------------------------------- */
 
 const patientDoctorMap = new Map([
-    ["PT001", "D101"],
-    ["PT002", "D102"],
-    ["PT003", "D101"],
+    ["PT001", { primary: "D101", secondary: "D102" }],
+    ["PT002", { primary: "D102", secondary: "D101" }],
+    ["PT003", { primary: "D101", secondary: "D102" }],
 ]);
 
 /* ----------------------------------------
@@ -114,8 +123,8 @@ const patientDoctorMap = new Map([
 
 const patientPhoneMap = new Map();
 
-if (process.env.BANDWIDTH_PATIENT_1_PHONE || VOICE_PATIENT_NUMBER) {
-    patientPhoneMap.set(process.env.BANDWIDTH_PATIENT_1_PHONE || VOICE_PATIENT_NUMBER, "PT001");
+if (process.env.BANDWIDTH_PATIENT_1_PHONE) {
+    patientPhoneMap.set(process.env.BANDWIDTH_PATIENT_1_PHONE, "PT001");
 }
 
 if (process.env.BANDWIDTH_PATIENT_2_PHONE) {

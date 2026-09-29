@@ -14,6 +14,19 @@
  * - "N patients waiting" badge + toast while the doctor is busy
  * - returning an offer to the queue if the doctor is busy
  * - patient hang-up (while ringing or connected)
+ *
+ * ADDED IN THIS VERSION:
+ * - Cross-tab sync via BroadcastChannel, so the incoming call popup
+ *   shows on EVERY open tab of the app, not just the tab that
+ *   happens to hold the live socket connection.
+ * - Desktop Notification + flashing tab title, so the doctor notices
+ *   an incoming call even if they're on a different tab/app entirely.
+ *
+ * NOTE: make sure the #active_call_window markup + the 5 <script>
+ * tags (jquery, bandwidth.bundle.js, outbound.code.js, inbound.code.js,
+ * code.js) are present on every page of the app, not only index.html,
+ * if you also need this to work across separate HTML pages (not just
+ * separate tabs of the same page).
  */
 
 window.bandwidthInboundMixin = function () {
@@ -42,6 +55,20 @@ window.bandwidthInboundMixin = function () {
 
     /*
      * ----------------------------------------
+     * CROSS-TAB SYNC STATE
+     * ----------------------------------------
+     */
+
+    this.callChannel = ("BroadcastChannel" in window)
+        ? new BroadcastChannel("bandwidth_inbound_calls")
+        : null;
+
+    this._originalTitle = null;
+    this._titleFlashTimer = null;
+    this._callNotification = null;
+
+    /*
+     * ----------------------------------------
      * SERVER EVENTS (called by code.js)
      * Returns true when the event was handled here.
      * ----------------------------------------
@@ -50,14 +77,17 @@ window.bandwidthInboundMixin = function () {
     this.handleInboundDoctorEvent = function (data) {
         switch (data.type) {
             case "incomingPstnCall":
+                this.broadcastToOtherTabs("incomingPstnCall", data);
                 this.handleIncomingPstnCall(data);
                 return true;
 
             case "incomingPstnCallCancelled":
+                this.broadcastToOtherTabs("incomingPstnCallCancelled", data);
                 this.handleIncomingCallCancelled(data);
                 return true;
 
             case "incomingPstnCallEnded":
+                this.broadcastToOtherTabs("incomingPstnCallEnded", data);
                 this.handleIncomingCallEnded(data);
                 return true;
 
@@ -72,6 +102,68 @@ window.bandwidthInboundMixin = function () {
 
     /*
      * ----------------------------------------
+     * CROSS-TAB SYNC (BroadcastChannel)
+     *
+     * Only ONE tab actually holds the live socket connection to
+     * the backend at any given moment. Whichever tab receives the
+     * event re-broadcasts it here so every other open tab of the
+     * same app (same origin) can show the popup locally too.
+     *
+     * Duplicate delivery is safe: handleIncomingPstnCall already
+     * ignores a pstnCallId it has already seen.
+     * ----------------------------------------
+     */
+
+    this.initCallChannelListener = function () {
+        if (!this.callChannel) {
+            console.warn(
+                "BroadcastChannel not supported in this browser; " +
+                    "cross-tab call sync is disabled.",
+            );
+
+            return;
+        }
+
+        this.callChannel.onmessage = function (event) {
+            const msg = event.data;
+
+            if (!msg || !msg.type) {
+                return;
+            }
+
+            switch (msg.type) {
+                case "incomingPstnCall":
+                    this.handleIncomingPstnCall(msg.payload);
+                    break;
+
+                case "incomingPstnCallCancelled":
+                    this.handleIncomingCallCancelled(msg.payload);
+                    break;
+
+                case "incomingPstnCallEnded":
+                    this.handleIncomingCallEnded(msg.payload);
+                    break;
+
+                default:
+                    break;
+            }
+        }.bind(this);
+    };
+
+    this.broadcastToOtherTabs = function (type, payload) {
+        if (!this.callChannel) {
+            return;
+        }
+
+        try {
+            this.callChannel.postMessage({ type: type, payload: payload });
+        } catch (error) {
+            console.warn("Failed to broadcast to other tabs:", error);
+        }
+    };
+
+    /*
+     * ----------------------------------------
      * QUEUE UI
      * ----------------------------------------
      */
@@ -81,7 +173,6 @@ window.bandwidthInboundMixin = function () {
             this.$queueBadge = $(
                 '<span id="inbound_queue_badge" class="badge rounded-pill text-bg-warning d-none"></span>',
             );
-
             $(this.selectors.doctorStatus).before(this.$queueBadge);
         }
 
@@ -106,9 +197,7 @@ window.bandwidthInboundMixin = function () {
         if (!this.$queueToast) {
             return;
         }
-
         this.$queueToast.text(message).removeClass("d-none");
-
         clearTimeout(this.queueToastTimer);
 
         this.queueToastTimer = setTimeout(
@@ -118,11 +207,9 @@ window.bandwidthInboundMixin = function () {
             6000,
         );
     };
-
     this.handleInboundQueueUpdated = function (data) {
         const waiting = Array.isArray(data.waiting) ? data.waiting : [];
         const count = waiting.length;
-
         if (this.$queueBadge) {
             this.$queueBadge
                 .toggleClass("d-none", count === 0)
@@ -261,22 +348,150 @@ window.bandwidthInboundMixin = function () {
     };
 
     this.showIncomingCall = function () {
-        this.showCallWindow(false);
+
+        const callWindow = $("#active_call_window");
+
+        if (!callWindow.length) {
+            console.error("Global call window not found.");
+            return;
+        }
+
+        const pipOpen =
+            this.pictureInPictureWindow && !this.pictureInPictureWindow.closed;
+
+        callWindow.removeClass("is-pip");
+
+        // If the floating PiP window is open, the call shows THERE
+        // (on top of other apps). Keep the in-page copy hidden.
+        if (!pipOpen) {
+            callWindow.css({
+                display: "block",
+                position: "fixed",
+                zIndex: 99999
+            });
+        }
 
         const patient = this.incomingPatient;
 
-        $(this.selectors.callPatientName).text(patient.name);
-        $(this.selectors.callPatientNumber).text(patient.phoneNumber);
-        $(this.selectors.callStatus).text("Incoming call");
-        $(this.selectors.callDuration).text("00:00");
+        $(this.selectors.callPatientName)
+            .text(patient?.name || "Patient");
 
-        $(this.selectors.callRingingIndicator).removeClass("d-none");
-        $(this.selectors.incomingCallControls).removeClass("d-none");
-        $(this.selectors.activeCallControls).addClass("d-none");
+        $(this.selectors.callPatientNumber)
+            .text(patient?.phoneNumber || "");
+
+        $(this.selectors.callStatus)
+            .text("Incoming call");
+
+        $(this.selectors.callDuration)
+            .text("00:00");
+
+        // Show ringing
+        $(this.selectors.callRingingIndicator)
+            .removeClass("d-none");
+
+        // Show incoming buttons
+        $(this.selectors.incomingCallControls)
+            .removeClass("d-none");
+
+        // Hide active-call buttons
+        $(this.selectors.activeCallControls)
+            .addClass("d-none");
 
         this.startIncomingRingtone();
 
-        console.log("Incoming call UI displayed.");
+        // Flash the tab title + fire a desktop notification so the
+        // doctor notices even if they're on a different tab/app.
+        this.startIncomingAttentionAlert(patient);
+    };
+
+    /*
+     * ----------------------------------------
+     * ATTENTION ALERT (tab title flash + desktop notification)
+     * ----------------------------------------
+     */
+
+    this.startIncomingAttentionAlert = function (patient) {
+        this._originalTitle = this._originalTitle || document.title;
+
+        clearInterval(this._titleFlashTimer);
+
+        this._titleFlashTimer = setInterval(
+            function () {
+                document.title =
+                    document.title === this._originalTitle
+                        ? "\u260E Incoming call..."
+                        : this._originalTitle;
+            }.bind(this),
+            1000,
+        );
+
+        if (!("Notification" in window)) {
+            return;
+        }
+
+        /*
+         * Permission can NOT be requested here: this runs from a
+         * server event, not a click, so browsers ignore the request.
+         * It is requested on Login / first click (code.js).
+         */
+
+        if (Notification.permission === "granted") {
+            this._sendCallNotification(patient);
+        } else {
+            console.warn(
+                "Desktop notifications are '" +
+                    Notification.permission +
+                    "'. Incoming calls cannot be shown outside the page.",
+            );
+        }
+    };
+
+    this._sendCallNotification = function (patient) {
+        if (!("serviceWorker" in navigator)) {
+            return; // no action-button support without a service worker
+        }
+
+        navigator.serviceWorker.ready
+            .then(
+                function (registration) {
+                    return registration.showNotification("Incoming call", {
+                        body: (patient?.name || "Patient") + " is calling",
+                        tag: "bandwidth-incoming-call",
+                        renotify: true,
+                        requireInteraction: true,
+                        actions: [
+                            { action: "decline", title: "Decline" },
+                            { action: "accept", title: "Accept" },
+                        ],
+                        data: {
+                            pstnCallId: this.incomingPstnCallId,
+                            doctorId: this.doctorId,
+                        },
+                    });
+                }.bind(this),
+            )
+            .catch(function (error) {
+                console.warn("Failed to show call notification:", error);
+            });
+    };
+
+    this.stopIncomingAttentionAlert = function () {
+        clearInterval(this._titleFlashTimer);
+        this._titleFlashTimer = null;
+
+        if (this._callNotification) {
+            try {
+                this._callNotification.close();
+            } catch (error) {
+                // already closed
+            }
+
+            this._callNotification = null;
+        }
+
+        if (this._originalTitle) {
+            document.title = this._originalTitle;
+        }
     };
 
     /*
@@ -312,6 +527,7 @@ window.bandwidthInboundMixin = function () {
         this.openCallPictureInPicture();
 
         this.stopIncomingRingtone();
+        this.stopIncomingAttentionAlert();
 
         $(this.selectors.callStatus).text("Connecting...");
         $(this.selectors.incomingCallControls).addClass("d-none");
@@ -322,7 +538,7 @@ window.bandwidthInboundMixin = function () {
         this.incomingCallAccepted = true;
 
         try {
-            // The mic is unpublished after every call; publish it again.
+            // Make sure the mic is published (no-op if it already is).
             const micReady = await this.startMicrophone();
 
             if (!micReady) {
@@ -390,8 +606,6 @@ window.bandwidthInboundMixin = function () {
                     ? "Call no longer available"
                     : "Call failed",
             );
-
-            await this.stopMicrophone();
 
             this.scheduleCallCleanup(1500);
         }
@@ -490,6 +704,7 @@ window.bandwidthInboundMixin = function () {
         console.log("Declining incoming PSTN call:", pstnCallId);
 
         this.stopIncomingRingtone();
+        this.stopIncomingAttentionAlert();
 
         $(this.selectors.incomingCallControls).addClass("d-none");
         $(this.selectors.callRingingIndicator).addClass("d-none");
@@ -507,12 +722,53 @@ window.bandwidthInboundMixin = function () {
 
                 console.log("Inbound call decline response:", response);
             } catch (error) {
-                console.error(
-                    "Failed to decline incoming PSTN call:",
-                    error.responseJSON || error.responseText || error,
-                );
+                // Expected race: the call may have already been ended by
+                // the OS notification's Decline button, another open tab,
+                // or the patient hanging up. That's not a real failure —
+                // the UI already cleared above either way, so just log it
+                // quietly instead of raising a console error.
+                const alreadyHandled =
+                    error.status === 409 &&
+                    error.responseJSON?.message === "Call is not ringing";
+
+                if (alreadyHandled) {
+                    console.log(
+                        "Call was already declined/ended elsewhere:",
+                        pstnCallId,
+                    );
+                } else {
+                    console.error(
+                        "Failed to decline incoming PSTN call:",
+                        error.responseJSON || error.responseText || error,
+                    );
+                }
             }
         }
+
+        this.incomingCallAccepted = false;
+
+        this.scheduleCallCleanup(800);
+    };
+
+    /*
+     * Called when the call was already declined elsewhere (the OS
+     * notification's Decline button, another open tab, etc.) — this
+     * only clears THIS tab's ringing UI, it never calls the decline API
+     * again (that call has already ended on the server).
+     */
+    this.handleExternalDecline = function () {
+        if (!this.incomingCallActive) {
+            return; // this tab was never showing the ringing UI
+        }
+
+        console.log("Call already declined elsewhere — clearing UI.");
+
+        this.stopIncomingRingtone();
+        this.stopIncomingAttentionAlert();
+
+        $(this.selectors.incomingCallControls).addClass("d-none");
+        $(this.selectors.callRingingIndicator).addClass("d-none");
+        $(this.selectors.callStatus).text("Call declined");
 
         this.incomingCallAccepted = false;
 
@@ -536,6 +792,8 @@ window.bandwidthInboundMixin = function () {
             return;
         }
 
+        this.stopIncomingAttentionAlert();
+
         this.handleRemoteHangup(
             data.reason === "missed" ? "Missed call" : "Call cancelled",
         );
@@ -551,6 +809,8 @@ window.bandwidthInboundMixin = function () {
         ) {
             return;
         }
+
+        this.stopIncomingAttentionAlert();
 
         this.handleRemoteHangup(
             this.incomingBrtcConnected ? "Call ended" : "Caller hung up",
@@ -669,6 +929,7 @@ window.bandwidthInboundMixin = function () {
 
     this.resetInboundState = function () {
         this.clearIncomingConnectTimer();
+        this.stopIncomingAttentionAlert();
 
         this.incomingPatient = null;
         this.incomingPatientId = null;
@@ -690,6 +951,7 @@ window.bandwidthInboundMixin = function () {
 
     this.bindInboundEvents = function () {
         this.initInboundQueueUi();
+        this.initCallChannelListener();
 
         $(this.selectors.acceptIncomingCallButton).on(
             "click",
@@ -711,5 +973,27 @@ window.bandwidthInboundMixin = function () {
                 this.openCallPictureInPicture();
             }.bind(this),
         );
+
+        // Separate from the button clicks above — this catches the
+        // "Accept" tap coming from the OS-level notification (via the
+        // service worker's notificationclick handler), which has no
+        // button in the page's own DOM to attach a click listener to.
+        if ("serviceWorker" in navigator) {
+            navigator.serviceWorker.addEventListener(
+                "message",
+                function (event) {
+                    if (event.data?.type === "INBOUND_CALL_ACCEPT") {
+                        this.acceptIncomingCall();
+                    } else if (event.data?.type === "INBOUND_CALL_DECLINED") {
+                        // The notification's own Decline button already
+                        // told the server to end the call — just clear
+                        // this tab's ringing UI, don't call the decline
+                        // API again (it would fail with "Call is not
+                        // ringing" since the call is already gone).
+                        this.handleExternalDecline();
+                    }
+                }.bind(this),
+            );
+        }
     };
 };
